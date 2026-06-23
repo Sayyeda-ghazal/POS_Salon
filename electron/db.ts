@@ -11,6 +11,24 @@ type SaleRecord = SaleSummary & {
   paymentMethod: string;
   createdAt: string;
   itemCount: number;
+  detailedItems?: Array<{
+    id: string;
+    productId: string;
+    productName: string;
+    quantity: number;
+    unitPrice: number;
+    lineTotal: number;
+  }>;
+};
+
+export type SyncQueueRow = {
+  id: string;
+  entityType: string;
+  entityId: string;
+  payload: string;
+  status: string;
+  createdAt: string;
+  syncedAt: string | null;
 };
 
 let database: Database.Database | null = null;
@@ -75,6 +93,14 @@ export function initDb() {
       status TEXT NOT NULL DEFAULT 'pending',
       createdAt TEXT NOT NULL,
       syncedAt TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS inventory_movements (
+      id TEXT PRIMARY KEY,
+      productId TEXT NOT NULL,
+      delta INTEGER NOT NULL,
+      reason TEXT NOT NULL,
+      createdAt TEXT NOT NULL
     );
   `);
 
@@ -150,6 +176,14 @@ export function createSale(payload: {
     const lineTotal = money(product.price * item.quantity);
     return { ...product, quantity: item.quantity, lineTotal };
   });
+  const saleItemRows = detailedItems.map((item) => ({
+    id: crypto.randomUUID(),
+    productId: item.id,
+    productName: item.name,
+    quantity: item.quantity,
+    unitPrice: item.price,
+    lineTotal: item.lineTotal,
+  }));
 
   const subtotal = money(detailedItems.reduce((sum, item) => sum + item.lineTotal, 0));
   const taxTotal = money(
@@ -188,29 +222,45 @@ export function createSale(payload: {
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
     const updateStock = db.prepare('UPDATE products SET stock = stock - ? WHERE id = ?');
+    const insertMovement = db.prepare(`
+      INSERT INTO inventory_movements (id, productId, delta, reason, createdAt)
+      VALUES (?, ?, ?, ?, ?)
+    `);
     const queue = db.prepare(`
       INSERT INTO sync_queue (id, entityType, entityId, payload, status, createdAt)
       VALUES (?, ?, ?, ?, 'pending', ?)
     `);
 
-    for (const item of detailedItems) {
+    for (const item of saleItemRows) {
       insertItem.run(
-        crypto.randomUUID(),
-        saleId,
         item.id,
-        item.name,
+        saleId,
+        item.productId,
+        item.productName,
         item.quantity,
-        item.price,
+        item.unitPrice,
         item.lineTotal
       );
-      updateStock.run(item.quantity, item.id);
+      updateStock.run(item.quantity, item.productId);
+      insertMovement.run(crypto.randomUUID(), item.productId, -item.quantity, 'sale', createdAt);
     }
 
     queue.run(
       crypto.randomUUID(),
       'sale',
       saleId,
-      JSON.stringify({ saleId, receiptNo, subtotal, taxTotal, discountTotal, grandTotal, detailedItems }),
+      JSON.stringify({
+        saleId,
+        receiptNo,
+        cashierName: payload.cashierName,
+        paymentMethod: payload.paymentMethod,
+        subtotal,
+        taxTotal,
+        discountTotal,
+        grandTotal,
+        detailedItems: saleItemRows,
+        createdAt,
+      }),
       createdAt
     );
   });
@@ -226,6 +276,9 @@ export function createSale(payload: {
     grandTotal,
     createdAt,
     itemCount: detailedItems.length,
+    cashierName: payload.cashierName,
+    paymentMethod: payload.paymentMethod,
+    detailedItems: saleItemRows,
   } satisfies SaleRecord;
 }
 
@@ -235,4 +288,74 @@ export function getRecentSales(limit = 10) {
       'SELECT id, receiptNo, cashierName, subtotal, taxTotal, discountTotal, grandTotal, paymentMethod, itemCount, createdAt FROM sales ORDER BY createdAt DESC LIMIT ?'
     )
     .all(limit) as SaleRecord[];
+}
+
+export function listInventory() {
+  return getDatabase()
+    .prepare(
+      'SELECT id, sku, barcode, name, category, price, stock, taxRate, isActive FROM products ORDER BY category, name'
+    )
+    .all();
+}
+
+export function adjustInventory(payload: {
+  productId: string;
+  delta: number;
+  reason: string;
+}) {
+  const db = getDatabase();
+  const product = db.prepare('SELECT id, name, stock FROM products WHERE id = ?').get(payload.productId) as
+    | { id: string; name: string; stock: number }
+    | undefined;
+  if (!product) throw new Error('Product not found');
+
+  const nextStock = product.stock + payload.delta;
+  if (nextStock < 0) throw new Error('Stock cannot go below zero');
+
+  const tx = db.transaction(() => {
+    db.prepare('UPDATE products SET stock = ? WHERE id = ?').run(nextStock, payload.productId);
+    db.prepare(
+      'INSERT INTO inventory_movements (id, productId, delta, reason, createdAt) VALUES (?, ?, ?, ?, ?)'
+    ).run(crypto.randomUUID(), payload.productId, payload.delta, payload.reason, new Date().toISOString());
+    db.prepare(
+      'INSERT INTO sync_queue (id, entityType, entityId, payload, status, createdAt) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(
+      crypto.randomUUID(),
+      'inventory_movement',
+      payload.productId,
+      JSON.stringify({
+        productId: payload.productId,
+        delta: payload.delta,
+        reason: payload.reason,
+        productName: product.name,
+      }),
+      'pending',
+      new Date().toISOString()
+    );
+  });
+
+  tx();
+
+  return {
+    productId: payload.productId,
+    stock: nextStock,
+  };
+}
+
+export function getPendingSyncEntries(limit = 25): SyncQueueRow[] {
+  return getDatabase()
+    .prepare(
+      'SELECT id, entityType, entityId, payload, status, createdAt, syncedAt FROM sync_queue WHERE status = ? ORDER BY createdAt ASC LIMIT ?'
+    )
+    .all('pending', limit) as SyncQueueRow[];
+}
+
+export function markSyncEntriesSynced(ids: string[]) {
+  if (ids.length === 0) return;
+  const db = getDatabase();
+  const placeholders = ids.map(() => '?').join(',');
+  db.prepare(`UPDATE sync_queue SET status = 'synced', syncedAt = ? WHERE id IN (${placeholders})`).run(
+    new Date().toISOString(),
+    ...ids
+  );
 }

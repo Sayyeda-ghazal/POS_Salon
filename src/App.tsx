@@ -1,7 +1,27 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Product } from '../electron/schema';
 
 type CartLine = Product & { quantity: number };
+type InventoryRow = Product;
+type ViewMode = 'pos' | 'inventory';
+type SaleResult = {
+  id: string;
+  receiptNo: string;
+  subtotal: number;
+  taxTotal: number;
+  discountTotal: number;
+  grandTotal: number;
+  createdAt: string;
+  itemCount: number;
+  detailedItems: Array<{
+    productName: string;
+    quantity: number;
+    unitPrice: number;
+    lineTotal: number;
+  }>;
+  cashierName: string;
+  paymentMethod: string;
+};
 
 const money = new Intl.NumberFormat('en-US', {
   style: 'currency',
@@ -12,6 +32,7 @@ const CASHIER_NAME = 'Amina Khan';
 
 function App() {
   const [products, setProducts] = useState<Product[]>([]);
+  const [inventory, setInventory] = useState<InventoryRow[]>([]);
   const [recentSales, setRecentSales] = useState<Array<any>>([]);
   const [dashboard, setDashboard] = useState<{
     salesToday: number;
@@ -21,15 +42,74 @@ function App() {
     online: boolean;
     registerName: string;
   } | null>(null);
+  const [syncStatus, setSyncStatus] = useState<{
+    enabled: boolean;
+    syncing: boolean;
+    online: boolean;
+    lastRunAt: string | null;
+    lastSuccessAt: string | null;
+    lastError: string | null;
+    pendingCount: number;
+    syncedCount: number;
+  } | null>(null);
   const [query, setQuery] = useState('');
   const [cart, setCart] = useState<CartLine[]>([]);
   const [status, setStatus] = useState<'ready' | 'saved'>('ready');
+  const [view, setView] = useState<ViewMode>('pos');
+  const scanBuffer = useRef('');
+  const scanTimer = useRef<number | null>(null);
 
   useEffect(() => {
-    window.pos.getDashboard().then(setDashboard);
-    window.pos.listProducts().then(setProducts);
-    window.pos.getRecentSales().then(setRecentSales);
+    const load = async () => {
+      const [dash, list, sales, sync, stock] = await Promise.all([
+        window.pos.getDashboard(),
+        window.pos.listProducts(),
+        window.pos.getRecentSales(),
+        window.pos.getSyncStatus(),
+        window.pos.listInventory(),
+      ]);
+      setDashboard(dash);
+      setProducts(list);
+      setRecentSales(sales);
+      setSyncStatus(sync);
+      setInventory(stock);
+    };
+
+    void load();
+    const timer = window.setInterval(() => {
+      window.pos.getSyncStatus().then(setSyncStatus);
+    }, 5000);
+
+    return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (view !== 'pos') return;
+      if (event.key === 'Enter') {
+        const code = scanBuffer.current.trim();
+        scanBuffer.current = '';
+        if (scanTimer.current) {
+          window.clearTimeout(scanTimer.current);
+          scanTimer.current = null;
+        }
+        if (!code) return;
+        const match = products.find((product) => product.barcode === code);
+        if (match) addToCart(match);
+        return;
+      }
+
+      if (event.key.length !== 1 || event.ctrlKey || event.metaKey || event.altKey) return;
+      scanBuffer.current += event.key;
+      if (scanTimer.current) window.clearTimeout(scanTimer.current);
+      scanTimer.current = window.setTimeout(() => {
+        scanBuffer.current = '';
+      }, 120);
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [products, view]);
 
   const filteredProducts = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -56,22 +136,42 @@ function App() {
     setStatus('ready');
   };
 
+  const refreshData = async () => {
+    const [dash, list, sales, sync, stock] = await Promise.all([
+      window.pos.getDashboard(),
+      window.pos.listProducts(),
+      window.pos.getRecentSales(),
+      window.pos.getSyncStatus(),
+      window.pos.listInventory(),
+    ]);
+    setDashboard(dash);
+    setProducts(list);
+    setRecentSales(sales);
+    setSyncStatus(sync);
+    setInventory(stock);
+  };
+
   const submitSale = async () => {
     if (cart.length === 0) return;
-    const result = await window.pos.createSale({
+    const result = (await window.pos.createSale({
       cashierName: CASHIER_NAME,
       paymentMethod: 'Cash',
       items: cart.map((item) => ({ productId: item.id, quantity: item.quantity })),
-    });
+    })) as SaleResult;
     setCart([]);
     setStatus('saved');
-    const nextDashboard = await window.pos.getDashboard();
-    const nextSales = await window.pos.getRecentSales();
-    const nextProducts = await window.pos.listProducts();
-    setDashboard(nextDashboard);
-    setRecentSales(nextSales);
-    setProducts(nextProducts);
+    await window.pos.printReceipt(result);
+    await refreshData();
     alert(`Sale saved locally as ${result.receiptNo}`);
+  };
+
+  const adjustStock = async (productId: string, delta: number) => {
+    await window.pos.adjustInventory({
+      productId,
+      delta,
+      reason: delta > 0 ? 'manual restock' : 'manual adjustment',
+    });
+    await refreshData();
   };
 
   return (
@@ -110,6 +210,30 @@ function App() {
               <span>Sync queue</span>
             </div>
           </div>
+          <div className="sync-box">
+            <div className="status-row">
+              <strong>Neon sync</strong>
+              <span className={`pill ${syncStatus?.enabled ? 'pill-online' : 'pill-offline'}`}>
+                {syncStatus?.enabled ? (syncStatus.syncing ? 'Syncing' : 'Enabled') : 'Disabled'}
+              </span>
+            </div>
+            <p className="muted">
+              {syncStatus?.lastError
+                ? syncStatus.lastError
+                : syncStatus?.lastSuccessAt
+                  ? `Last sync ${new Date(syncStatus.lastSuccessAt).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}`
+                  : 'Connect NEON_DATABASE_URL to enable cloud sync.'}
+            </p>
+            <div className="sync-actions">
+              <button className="ghost-button" onClick={() => window.pos.syncNow().then(setSyncStatus)}>
+                Sync now
+              </button>
+              <span className="muted">{syncStatus?.pendingCount ?? 0} pending</span>
+            </div>
+          </div>
         </div>
 
         <div className="panel">
@@ -137,10 +261,21 @@ function App() {
             <p className="eyebrow">Cashier station</p>
             <h2>Fast checkout, built to feel calm and premium.</h2>
           </div>
-          <button className="ghost-button">Keyboard shortcuts</button>
+          <div className="toolbar">
+            <button className={`ghost-button ${view === 'pos' ? 'ghost-active' : ''}`} onClick={() => setView('pos')}>
+              POS
+            </button>
+            <button
+              className={`ghost-button ${view === 'inventory' ? 'ghost-active' : ''}`}
+              onClick={() => setView('inventory')}
+            >
+              Inventory
+            </button>
+          </div>
         </header>
 
-        <section className="workspace">
+        {view === 'pos' ? (
+          <section className="workspace">
           <div className="catalog">
             <div className="search-wrap">
               <input
@@ -218,7 +353,48 @@ function App() {
               Complete sale
             </button>
           </aside>
-        </section>
+          </section>
+        ) : (
+          <section className="inventory-view">
+            <div className="panel">
+              <div className="inventory-head">
+                <div>
+                  <p className="eyebrow">Stock room</p>
+                  <h2>Inventory control</h2>
+                </div>
+                <span className="pill pill-offline">{inventory.length} items</span>
+              </div>
+
+              <div className="inventory-list">
+                {inventory.map((item) => (
+                  <div className="inventory-row" key={item.id}>
+                    <div>
+                      <strong>{item.name}</strong>
+                      <span>
+                        {item.category} · {item.sku} · {item.barcode}
+                      </span>
+                    </div>
+                    <div className="inventory-meta">
+                      <strong>{item.stock}</strong>
+                      <span>{money.format(item.price)}</span>
+                    </div>
+                    <div className="inventory-actions">
+                      <button className="ghost-button" onClick={() => adjustStock(item.id, -1)}>
+                        -1
+                      </button>
+                      <button className="ghost-button" onClick={() => adjustStock(item.id, 1)}>
+                        +1
+                      </button>
+                      <button className="ghost-button" onClick={() => adjustStock(item.id, 10)}>
+                        +10
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+        )}
       </main>
     </div>
   );

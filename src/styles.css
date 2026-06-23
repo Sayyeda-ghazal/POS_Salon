@@ -148,6 +148,20 @@ input {
   background: rgba(255, 255, 255, 0.03);
 }
 
+.sync-box {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.sync-actions {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .status-grid strong,
 .totals strong {
   display: block;
@@ -196,6 +210,16 @@ input {
   margin-bottom: 20px;
 }
 
+.toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.ghost-active {
+  background: rgba(102, 209, 255, 0.16);
+}
+
 .topbar h2 {
   font-size: clamp(2rem, 2vw, 2.8rem);
   max-width: 760px;
@@ -238,6 +262,49 @@ input {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 390px;
   gap: 18px;
+}
+
+.inventory-view {
+  display: block;
+}
+
+.inventory-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.inventory-list {
+  display: grid;
+  gap: 12px;
+}
+
+.inventory-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) 120px 230px;
+  gap: 14px;
+  align-items: center;
+  padding: 14px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.inventory-row span,
+.inventory-meta span {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.inventory-meta {
+  text-align: right;
+}
+
+.inventory-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .catalog {
@@ -345,6 +412,17 @@ input {
 
   .product-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .inventory-row {
+    grid-template-columns: 1fr;
+    align-items: flex-start;
+  }
+
+  .inventory-meta,
+  .inventory-actions {
+    text-align: left;
+    justify-content: flex-start;
   }
 }
 
