@@ -1,0 +1,7 @@
+node_modules
+dist
+dist-electron
+.vite
+*.sqlite3
+*.sqlite3-journal
+*.log
