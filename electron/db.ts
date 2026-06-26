@@ -26,6 +26,7 @@ type CustomerRecord = {
   name: string;
   phone: string | null;
   email: string | null;
+  notes: string | null;
   loyaltyPoints: number;
   visitsCount: number;
   lastVisitAt: string | null;
@@ -53,6 +54,18 @@ export type SyncQueueRow = {
   status: string;
   createdAt: string;
   syncedAt: string | null;
+};
+
+export type CustomerServiceSummary = {
+  serviceName: string;
+  visitCount: number;
+  totalAmount: number;
+};
+
+export type CustomerProfile = {
+  customer: CustomerRecord;
+  recentVisits: VisitRecord[];
+  favoriteServices: CustomerServiceSummary[];
 };
 
 let database: InstanceType<typeof Database> | null = null;
@@ -132,6 +145,7 @@ export function initDb() {
       name TEXT NOT NULL,
       phone TEXT,
       email TEXT,
+      notes TEXT,
       loyaltyPoints INTEGER NOT NULL DEFAULT 0,
       visitsCount INTEGER NOT NULL DEFAULT 0,
       lastVisitAt TEXT,
@@ -156,10 +170,19 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_products_sku ON products (sku);
     CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales (createdAt);
     CREATE INDEX IF NOT EXISTS idx_visits_created_at ON visits (createdAt);
+    CREATE INDEX IF NOT EXISTS idx_visits_customer_id_created_at ON visits (customerId, createdAt);
     CREATE INDEX IF NOT EXISTS idx_customers_active_name ON customers (isActive, name);
     CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers (phone);
     CREATE INDEX IF NOT EXISTS idx_sync_queue_status_created_at ON sync_queue (status, createdAt);
   `);
+
+  try {
+    db.prepare('ALTER TABLE customers ADD COLUMN notes TEXT').run();
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes('duplicate column name')) {
+      throw error;
+    }
+  }
 
   const count = db.prepare('SELECT COUNT(*) as count FROM products').get() as { count: number };
   if (count.count === 0) {
@@ -180,8 +203,8 @@ export function initDb() {
   const customerCount = db.prepare('SELECT COUNT(*) as count FROM customers').get() as { count: number };
   if (customerCount.count === 0) {
     const seedCustomer = db.prepare(`
-      INSERT INTO customers (id, name, phone, email, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive)
-      VALUES (@id, @name, @phone, @email, @loyaltyPoints, @visitsCount, @lastVisitAt, @createdAt, 1)
+      INSERT INTO customers (id, name, phone, email, notes, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive)
+      VALUES (@id, @name, @phone, @email, @notes, @loyaltyPoints, @visitsCount, @lastVisitAt, @createdAt, 1)
     `);
     const rows = [
       {
@@ -189,6 +212,7 @@ export function initDb() {
         name: 'Ayesha Khan',
         phone: '0300-1111111',
         email: 'ayesha@example.com',
+        notes: 'Prefers evening appointments',
         loyaltyPoints: 24,
         visitsCount: 6,
         lastVisitAt: new Date().toISOString(),
@@ -199,6 +223,7 @@ export function initDb() {
         name: 'Sara Ali',
         phone: '0300-2222222',
         email: 'sara@example.com',
+        notes: 'Loves facial packages',
         loyaltyPoints: 12,
         visitsCount: 3,
         lastVisitAt: new Date().toISOString(),
@@ -209,6 +234,7 @@ export function initDb() {
         name: 'Maira Shah',
         phone: '0300-3333333',
         email: 'maira@example.com',
+        notes: 'Prefers nail art',
         loyaltyPoints: 8,
         visitsCount: 2,
         lastVisitAt: new Date().toISOString(),
@@ -563,7 +589,7 @@ export function adjustInventory(payload: {
 export function listCustomers(limit = 20, offset = 0): CustomerRecord[] {
   return getDatabase()
     .prepare(
-      'SELECT id, name, phone, email, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive FROM customers WHERE isActive = 1 ORDER BY name LIMIT ? OFFSET ?'
+      'SELECT id, name, phone, email, notes, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive FROM customers WHERE isActive = 1 ORDER BY name LIMIT ? OFFSET ?'
     )
     .all(limit, offset) as CustomerRecord[];
 }
@@ -575,7 +601,7 @@ export function findCustomers(query: string, limit = 10): CustomerRecord[] {
   if (!q) {
     return db
       .prepare(
-        'SELECT id, name, phone, email, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive FROM customers WHERE isActive = 1 ORDER BY lastVisitAt DESC, name LIMIT ?'
+        'SELECT id, name, phone, email, notes, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive FROM customers WHERE isActive = 1 ORDER BY lastVisitAt DESC, name LIMIT ?'
       )
       .all(limit) as CustomerRecord[];
   }
@@ -583,7 +609,7 @@ export function findCustomers(query: string, limit = 10): CustomerRecord[] {
   const like = `%${q}%`;
   return db
     .prepare(
-      `SELECT id, name, phone, email, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive
+      `SELECT id, name, phone, email, notes, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive
        FROM customers
        WHERE isActive = 1
          AND (name LIKE ? OR phone LIKE ? OR email LIKE ?)
@@ -593,11 +619,12 @@ export function findCustomers(query: string, limit = 10): CustomerRecord[] {
     .all(like, like, like, limit) as CustomerRecord[];
 }
 
-export function createCustomer(payload: { name: string; phone?: string; email?: string }) {
+export function createCustomer(payload: { name: string; phone?: string; email?: string; notes?: string }) {
   const db = getDatabase();
   const name = payload.name.trim();
   const phone = payload.phone?.trim() || null;
   const email = payload.email?.trim() || null;
+  const notes = payload.notes?.trim() || null;
 
   if (!name) throw new Error('Customer name is required');
 
@@ -606,8 +633,8 @@ export function createCustomer(payload: { name: string; phone?: string; email?: 
 
   db.prepare(`
     INSERT INTO customers (id, name, phone, email, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive)
-    VALUES (?, ?, ?, ?, 0, 0, NULL, ?, 1)
-  `).run(id, name, phone, email, createdAt);
+    VALUES (?, ?, ?, ?, ?, 0, 0, NULL, ?, 1)
+  `).run(id, name, phone, email, notes, createdAt);
 
   db.prepare(`
     INSERT INTO sync_queue (id, entityType, entityId, payload, status, createdAt)
@@ -621,6 +648,7 @@ export function createCustomer(payload: { name: string; phone?: string; email?: 
       name,
       phone,
       email,
+      notes,
       loyaltyPoints: 0,
       visitsCount: 0,
       lastVisitAt: null,
@@ -635,12 +663,124 @@ export function createCustomer(payload: { name: string; phone?: string; email?: 
     name,
     phone,
     email,
+    notes,
     loyaltyPoints: 0,
     visitsCount: 0,
     lastVisitAt: null,
     createdAt,
     isActive: 1,
   } satisfies CustomerRecord;
+}
+
+export function updateCustomer(payload: { id: string; name: string; phone?: string; email?: string; notes?: string }) {
+  const db = getDatabase();
+  const id = payload.id.trim();
+  const name = payload.name.trim();
+  const phone = payload.phone?.trim() || null;
+  const email = payload.email?.trim() || null;
+  const notes = payload.notes?.trim() || null;
+
+  if (!id) throw new Error('Customer id is required');
+  if (!name) throw new Error('Customer name is required');
+
+  const customer = db
+    .prepare(
+      'SELECT id, name, phone, email, notes, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive FROM customers WHERE id = ?'
+    )
+    .get(id) as CustomerRecord | undefined;
+  if (!customer) throw new Error('Customer not found');
+
+  db.prepare(
+    'UPDATE customers SET name = ?, phone = ?, email = ?, notes = ? WHERE id = ?'
+  ).run(name, phone, email, notes, id);
+
+  const updated = {
+    ...customer,
+    name,
+    phone,
+    email,
+    notes,
+  } satisfies CustomerRecord;
+
+  db.prepare(`
+    INSERT INTO sync_queue (id, entityType, entityId, payload, status, createdAt)
+    VALUES (?, ?, ?, ?, 'pending', ?)
+  `).run(
+    crypto.randomUUID(),
+    'customer',
+    id,
+    JSON.stringify(updated),
+    new Date().toISOString()
+  );
+
+  return updated;
+}
+
+export function deleteCustomer(payload: { id: string }) {
+  const db = getDatabase();
+  const id = payload.id.trim();
+  if (!id) throw new Error('Customer id is required');
+
+  const customer = db
+    .prepare(
+      'SELECT id, name, phone, email, notes, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive FROM customers WHERE id = ?'
+    )
+    .get(id) as CustomerRecord | undefined;
+  if (!customer) throw new Error('Customer not found');
+  if (customer.isActive === 0) throw new Error('Customer is already deleted');
+
+  db.prepare('UPDATE customers SET isActive = 0 WHERE id = ?').run(id);
+
+  const deleted = {
+    ...customer,
+    isActive: 0,
+  } satisfies CustomerRecord;
+
+  db.prepare(`
+    INSERT INTO sync_queue (id, entityType, entityId, payload, status, createdAt)
+    VALUES (?, ?, ?, ?, 'pending', ?)
+  `).run(
+    crypto.randomUUID(),
+    'customer',
+    id,
+    JSON.stringify(deleted),
+    new Date().toISOString()
+  );
+
+  return deleted;
+}
+
+export function getCustomerProfile(customerId: string): CustomerProfile {
+  const db = getDatabase();
+  const customer = db
+    .prepare(
+      'SELECT id, name, phone, email, notes, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive FROM customers WHERE id = ?'
+    )
+    .get(customerId) as CustomerRecord | undefined;
+  if (!customer) throw new Error('Customer not found');
+
+  const recentVisits = db
+    .prepare(
+      'SELECT id, customerId, customerName, serviceName, amount, pointsEarned, notes, createdAt, source FROM visits WHERE customerId = ? ORDER BY createdAt DESC LIMIT 20'
+    )
+    .all(customerId) as VisitRecord[];
+
+  const favoriteServices = db
+    .prepare(
+      `SELECT serviceName, COUNT(*) as visitCount, COALESCE(SUM(amount), 0) as totalAmount
+       FROM visits
+       WHERE customerId = ?
+       GROUP BY serviceName
+       ORDER BY visitCount DESC, totalAmount DESC, serviceName ASC
+       LIMIT 5`
+    )
+    .all(customerId) as CustomerServiceSummary[];
+
+  return {
+    customer,
+    recentVisits,
+    favoriteServices,
+  };
 }
 
 export function createVisit(payload: {
@@ -718,8 +858,8 @@ export function createVisit(payload: {
     );
 
     if (customerId) {
-      const customer = db
-        .prepare('SELECT id, name, phone, email, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive FROM customers WHERE id = ?')
+    const customer = db
+        .prepare('SELECT id, name, phone, email, notes, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive FROM customers WHERE id = ?')
         .get(customerId) as CustomerRecord | undefined;
       if (customer) {
         db.prepare(`

@@ -32,6 +32,7 @@ interface Window {
       name: string;
       phone: string | null;
       email: string | null;
+      notes: string | null;
       loyaltyPoints: number;
       visitsCount: number;
       lastVisitAt: string | null;
@@ -43,12 +44,43 @@ interface Window {
       name: string;
       phone: string | null;
       email: string | null;
+      notes: string | null;
       loyaltyPoints: number;
       visitsCount: number;
       lastVisitAt: string | null;
       createdAt: string;
       isActive: number;
     }>>;
+    getCustomerProfile: (payload: { customerId: string }) => Promise<{
+      customer: {
+        id: string;
+        name: string;
+        phone: string | null;
+        email: string | null;
+        notes: string | null;
+        loyaltyPoints: number;
+        visitsCount: number;
+        lastVisitAt: string | null;
+        createdAt: string;
+        isActive: number;
+      };
+      recentVisits: Array<{
+        id: string;
+        customerId: string | null;
+        customerName: string;
+        serviceName: string;
+        amount: number;
+        pointsEarned: number;
+        notes: string | null;
+        createdAt: string;
+        source: string;
+      }>;
+      favoriteServices: Array<{
+        serviceName: string;
+        visitCount: number;
+        totalAmount: number;
+      }>;
+    }>;
     getRecentSales: () => Promise<Array<{
       id: string;
       receiptNo: string;
@@ -61,11 +93,36 @@ interface Window {
       itemCount: number;
       createdAt: string;
     }>>;
-    createCustomer: (payload: { name: string; phone?: string; email?: string }) => Promise<{
+    createCustomer: (payload: { name: string; phone?: string; email?: string; notes?: string }) => Promise<{
       id: string;
       name: string;
       phone: string | null;
       email: string | null;
+      notes: string | null;
+      loyaltyPoints: number;
+      visitsCount: number;
+      lastVisitAt: string | null;
+      createdAt: string;
+      isActive: number;
+    }>;
+    updateCustomer: (payload: { id: string; name: string; phone?: string; email?: string; notes?: string }) => Promise<{
+      id: string;
+      name: string;
+      phone: string | null;
+      email: string | null;
+      notes: string | null;
+      loyaltyPoints: number;
+      visitsCount: number;
+      lastVisitAt: string | null;
+      createdAt: string;
+      isActive: number;
+    }>;
+    deleteCustomer: (payload: { id: string }) => Promise<{
+      id: string;
+      name: string;
+      phone: string | null;
+      email: string | null;
+      notes: string | null;
       loyaltyPoints: number;
       visitsCount: number;
       lastVisitAt: string | null;

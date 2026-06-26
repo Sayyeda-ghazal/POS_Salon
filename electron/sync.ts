@@ -165,6 +165,7 @@ async function ensureSchema(sql: NeonClient) {
       name TEXT NOT NULL,
       phone TEXT,
       email TEXT,
+      notes TEXT,
       loyalty_points INTEGER NOT NULL DEFAULT 0,
       visits_count INTEGER NOT NULL DEFAULT 0,
       last_visit_at TEXT,
@@ -294,6 +295,7 @@ async function syncCustomer(sql: NeonClient, row: SyncQueueRow) {
     name: string;
     phone: string | null;
     email: string | null;
+    notes: string | null;
     loyaltyPoints: number;
     visitsCount: number;
     lastVisitAt: string | null;
@@ -307,6 +309,7 @@ async function syncCustomer(sql: NeonClient, row: SyncQueueRow) {
       name,
       phone,
       email,
+      notes,
       loyalty_points,
       visits_count,
       last_visit_at,
@@ -317,6 +320,7 @@ async function syncCustomer(sql: NeonClient, row: SyncQueueRow) {
       ${payload.name},
       ${payload.phone},
       ${payload.email},
+      ${payload.notes},
       ${payload.loyaltyPoints},
       ${payload.visitsCount},
       ${payload.lastVisitAt},
@@ -327,6 +331,7 @@ async function syncCustomer(sql: NeonClient, row: SyncQueueRow) {
       name = EXCLUDED.name,
       phone = EXCLUDED.phone,
       email = EXCLUDED.email,
+      notes = EXCLUDED.notes,
       loyalty_points = EXCLUDED.loyalty_points,
       visits_count = EXCLUDED.visits_count,
       last_visit_at = EXCLUDED.last_visit_at,

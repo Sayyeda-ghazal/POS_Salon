@@ -8,13 +8,16 @@ import {
   createCustomer,
   createVisit,
   createSale,
+  deleteCustomer,
   getRecentSales,
   getStats,
+  getCustomerProfile,
   initDb,
   findCustomers,
   listCustomers,
   listInventory,
   listProducts,
+  updateCustomer,
 } from './db';
 import { SyncService } from './sync';
 
@@ -155,9 +158,12 @@ app.whenReady().then(() => {
   ipcMain.handle('products:list', async () => listProducts());
   ipcMain.handle('customers:list', async () => listCustomers());
   ipcMain.handle('customers:find', async (_event, payload) => findCustomers(payload?.query ?? '', payload?.limit ?? 10));
+  ipcMain.handle('customers:profile', async (_event, payload) => getCustomerProfile(payload?.customerId ?? ''));
   ipcMain.handle('sales:recent', async () => getRecentSales());
   ipcMain.handle('sales:create', async (_event, payload) => createSale(payload));
   ipcMain.handle('customers:create', async (_event, payload) => createCustomer(payload));
+  ipcMain.handle('customers:update', async (_event, payload) => updateCustomer(payload));
+  ipcMain.handle('customers:delete', async (_event, payload) => deleteCustomer(payload));
   ipcMain.handle('visits:create', async (_event, payload) => createVisit(payload));
   ipcMain.handle('products:create', async (_event, payload) => createProduct(payload));
   ipcMain.handle('products:delete', async (_event, payload) => deleteProduct(payload));

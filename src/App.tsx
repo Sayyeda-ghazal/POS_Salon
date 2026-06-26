@@ -8,6 +8,7 @@ type CustomerRow = {
   name: string;
   phone: string | null;
   email: string | null;
+  notes: string | null;
   loyaltyPoints: number;
   visitsCount: number;
   lastVisitAt: string | null;
@@ -25,7 +26,17 @@ type VisitRow = {
   createdAt: string;
   source: string;
 };
-type ViewMode = 'dashboard' | 'pos' | 'inventory';
+type CustomerServiceSummary = {
+  serviceName: string;
+  visitCount: number;
+  totalAmount: number;
+};
+type CustomerProfile = {
+  customer: CustomerRow;
+  recentVisits: VisitRow[];
+  favoriteServices: CustomerServiceSummary[];
+};
+type ViewMode = 'dashboard' | 'customers' | 'pos' | 'inventory';
 type SaleResult = {
   id: string;
   receiptNo: string;
@@ -103,6 +114,7 @@ function App() {
     name: '',
     phone: '',
     email: '',
+    notes: '',
   });
   const [newCustomerStatus, setNewCustomerStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [newCustomerError, setNewCustomerError] = useState('');
@@ -118,6 +130,22 @@ function App() {
   const [selectedVisitCustomer, setSelectedVisitCustomer] = useState<CustomerRow | null>(null);
   const [newVisitStatus, setNewVisitStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [newVisitError, setNewVisitError] = useState('');
+  const [customerDirectoryQuery, setCustomerDirectoryQuery] = useState('');
+  const [customerDirectoryMatches, setCustomerDirectoryMatches] = useState<CustomerRow[]>([]);
+  const [customerDirectoryStatus, setCustomerDirectoryStatus] = useState<'idle' | 'loading'>('idle');
+  const [customerDirectoryRefreshToken, setCustomerDirectoryRefreshToken] = useState(0);
+  const [selectedCustomerId, setSelectedCustomerId] = useState('');
+  const [customerProfile, setCustomerProfile] = useState<CustomerProfile | null>(null);
+  const [customerProfileStatus, setCustomerProfileStatus] = useState<'idle' | 'loading'>('idle');
+  const [customerForm, setCustomerForm] = useState({
+    name: '',
+    phone: '',
+    email: '',
+    notes: '',
+  });
+  const [customerFormMode, setCustomerFormMode] = useState<'create' | 'edit'>('create');
+  const [customerFormStatus, setCustomerFormStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [customerFormError, setCustomerFormError] = useState('');
   const scanBuffer = useRef('');
   const scanTimer = useRef<number | null>(null);
 
@@ -198,6 +226,71 @@ function App() {
       window.clearTimeout(timer);
     };
   }, [customerSearch]);
+
+  useEffect(() => {
+    let active = true;
+    setCustomerDirectoryStatus('loading');
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const matches = await window.pos.findCustomers({
+          query: customerDirectoryQuery,
+          limit: 20,
+        });
+        if (!active) return;
+        setCustomerDirectoryMatches(matches);
+      } catch {
+        if (!active) return;
+        setCustomerDirectoryMatches([]);
+      } finally {
+        if (active) setCustomerDirectoryStatus('idle');
+      }
+    }, 180);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [customerDirectoryQuery, customerDirectoryRefreshToken]);
+
+  useEffect(() => {
+    if (!selectedCustomerId) {
+      setCustomerProfile(null);
+      return;
+    }
+
+    let active = true;
+    setCustomerProfileStatus('loading');
+
+    window.pos
+      .getCustomerProfile({ customerId: selectedCustomerId })
+      .then((profile) => {
+        if (!active) return;
+        setCustomerProfile(profile);
+        setCustomerForm({
+          name: profile.customer.name,
+          phone: profile.customer.phone ?? '',
+          email: profile.customer.email ?? '',
+          notes: profile.customer.notes ?? '',
+        });
+        setCustomerFormMode('edit');
+        setCustomerFormError('');
+        setCustomerFormStatus('idle');
+      })
+      .catch((error) => {
+        if (!active) return;
+        setCustomerProfile(null);
+        setCustomerFormError(error instanceof Error ? error.message : 'Could not load customer profile');
+        setCustomerProfileStatus('idle');
+      })
+      .finally(() => {
+        if (active) setCustomerProfileStatus('idle');
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [selectedCustomerId]);
 
   const filteredProducts = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -361,8 +454,9 @@ function App() {
         name: newCustomer.name,
         phone: newCustomer.phone || undefined,
         email: newCustomer.email || undefined,
+        notes: newCustomer.notes || undefined,
       });
-      setNewCustomer({ name: '', phone: '', email: '' });
+      setNewCustomer({ name: '', phone: '', email: '', notes: '' });
       setNewCustomerStatus('saved');
       await refreshData();
     } catch (error) {
@@ -401,6 +495,81 @@ function App() {
     } catch (error) {
       setNewVisitStatus('error');
       setNewVisitError(error instanceof Error ? error.message : 'Could not create visit');
+    }
+  };
+
+  const openCustomerForm = () => {
+    setCustomerForm({
+      name: '',
+      phone: '',
+      email: '',
+      notes: '',
+    });
+    setCustomerFormMode('create');
+    setSelectedCustomerId('');
+    setCustomerProfile(null);
+    setCustomerFormError('');
+    setCustomerFormStatus('idle');
+  };
+
+  const saveCustomer = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setCustomerFormStatus('saving');
+    setCustomerFormError('');
+
+    try {
+      if (customerFormMode === 'edit' && selectedCustomerId) {
+        const updated = await window.pos.updateCustomer({
+          id: selectedCustomerId,
+          name: customerForm.name,
+          phone: customerForm.phone || undefined,
+          email: customerForm.email || undefined,
+          notes: customerForm.notes || undefined,
+        });
+        setCustomerProfile((current) =>
+          current
+            ? {
+                ...current,
+                customer: updated,
+              }
+            : current
+        );
+      } else {
+        const created = await window.pos.createCustomer({
+          name: customerForm.name,
+          phone: customerForm.phone || undefined,
+          email: customerForm.email || undefined,
+          notes: customerForm.notes || undefined,
+        });
+        setSelectedCustomerId(created.id);
+      }
+
+      setCustomerFormStatus('saved');
+      setCustomerDirectoryRefreshToken((current) => current + 1);
+      await refreshData();
+    } catch (error) {
+      setCustomerFormStatus('error');
+      setCustomerFormError(error instanceof Error ? error.message : 'Could not save customer');
+    }
+  };
+
+  const removeCustomer = async () => {
+    if (!selectedCustomerId || !customerProfile) return;
+    const confirmed = window.confirm(`Delete ${customerProfile.customer.name}? This hides the customer from the active list.`);
+    if (!confirmed) return;
+
+    setCustomerFormStatus('saving');
+    setCustomerFormError('');
+
+    try {
+      await window.pos.deleteCustomer({ id: selectedCustomerId });
+      openCustomerForm();
+      setCustomerDirectoryQuery('');
+      setCustomerDirectoryRefreshToken((current) => current + 1);
+      await refreshData();
+    } catch (error) {
+      setCustomerFormStatus('error');
+      setCustomerFormError(error instanceof Error ? error.message : 'Could not delete customer');
     }
   };
 
@@ -488,16 +657,21 @@ function App() {
       <main className="main">
         <header className="topbar">
           <div>
-            <p className="eyebrow">{view === 'dashboard' ? 'Front desk' : 'Cashier station'}</p>
+            <p className="eyebrow">{view === 'dashboard' ? 'Front desk' : view === 'customers' ? 'Reception' : 'Cashier station'}</p>
             <h2>
               {view === 'dashboard'
                 ? 'Parlor dashboard for customers, visits, and loyalty.'
+                : view === 'customers'
+                  ? 'Manage customer profiles, history, and favorite services.'
                 : 'Fast checkout, built to feel calm and premium.'}
             </h2>
           </div>
           <div className="toolbar">
             <button className={`ghost-button ${view === 'dashboard' ? 'ghost-active' : ''}`} onClick={() => setView('dashboard')}>
               Dashboard
+            </button>
+            <button className={`ghost-button ${view === 'customers' ? 'ghost-active' : ''}`} onClick={() => setView('customers')}>
+              Customers
             </button>
             <button className={`ghost-button ${view === 'pos' ? 'ghost-active' : ''}`} onClick={() => setView('pos')}>
               POS
@@ -594,6 +768,15 @@ function App() {
                           placeholder="client@example.com"
                           value={newCustomer.email}
                           onChange={(event) => setNewCustomer((current) => ({ ...current, email: event.target.value }))}
+                        />
+                      </label>
+                      <label className="full-width">
+                        <span>Notes</span>
+                        <input
+                          className="field"
+                          placeholder="Preferred stylist, allergies, reminders"
+                          value={newCustomer.notes}
+                          onChange={(event) => setNewCustomer((current) => ({ ...current, notes: event.target.value }))}
                         />
                       </label>
                     </div>
@@ -750,6 +933,221 @@ function App() {
                       </div>
                     </div>
                   ))}
+                </div>
+              </section>
+            </div>
+          </section>
+        ) : view === 'customers' ? (
+          <section className="customer-management">
+            <div className="customer-management-layout">
+              <aside className="panel customer-directory">
+                <div className="customer-directory-head">
+                  <div>
+                    <p className="eyebrow">Customer management</p>
+                    <h2>Search by name or phone</h2>
+                  </div>
+                  <button className="ghost-button ghost-button-small" onClick={openCustomerForm}>
+                    New customer
+                  </button>
+                </div>
+
+                <input
+                  className="search customer-search"
+                  placeholder="Type name or phone number"
+                  value={customerDirectoryQuery}
+                  onChange={(event) => setCustomerDirectoryQuery(event.target.value)}
+                />
+
+                <div className="customer-directory-list">
+                  {customerDirectoryStatus === 'loading' ? <span className="muted">Loading customers...</span> : null}
+                  {customerDirectoryMatches.map((customer) => (
+                    <button
+                      type="button"
+                      key={customer.id}
+                      className={`customer-directory-item ${selectedCustomerId === customer.id ? 'customer-directory-item-active' : ''}`}
+                      onClick={() => setSelectedCustomerId(customer.id)}
+                    >
+                      <div>
+                        <strong>{customer.name}</strong>
+                        <span>{customer.phone || 'No phone'}</span>
+                      </div>
+                      <div className="right">
+                        <strong>{customer.visitsCount}</strong>
+                        <span>visits</span>
+                      </div>
+                    </button>
+                  ))}
+                  {customerDirectoryStatus === 'idle' && customerDirectoryMatches.length === 0 ? (
+                    <span className="muted">No customers found.</span>
+                  ) : null}
+                </div>
+              </aside>
+
+              <section className="panel customer-profile-panel">
+                <div className="dashboard-panel-head">
+                  <div>
+                    <p className="eyebrow">{customerFormMode === 'edit' ? 'Edit customer' : 'Add customer'}</p>
+                    <h2>
+                      {customerFormMode === 'create'
+                        ? 'New customer'
+                        : customerProfile?.customer.name || 'Customer profile'}
+                    </h2>
+                  </div>
+                  <span className={`pill ${customerProfile?.customer.isActive === 0 ? 'pill-offline' : 'pill-online'}`}>
+                    {customerProfile?.customer.isActive === 0 ? 'Deleted' : customerProfile ? 'Active' : 'Ready'}
+                  </span>
+                </div>
+
+                <form className="customer-profile-form" onSubmit={saveCustomer}>
+                  <div className="form-grid">
+                    <label>
+                      <span>Name</span>
+                      <input
+                        className="field"
+                        placeholder="Ayesha Khan"
+                        value={customerForm.name}
+                        onChange={(event) => setCustomerForm((current) => ({ ...current, name: event.target.value }))}
+                        required
+                      />
+                    </label>
+                    <label>
+                      <span>Phone number</span>
+                      <input
+                        className="field"
+                        placeholder="0300-1234567"
+                        value={customerForm.phone}
+                        onChange={(event) => setCustomerForm((current) => ({ ...current, phone: event.target.value }))}
+                      />
+                    </label>
+                    <label>
+                      <span>Email</span>
+                      <input
+                        className="field"
+                        placeholder="client@example.com"
+                        value={customerForm.email}
+                        onChange={(event) => setCustomerForm((current) => ({ ...current, email: event.target.value }))}
+                      />
+                    </label>
+                    <label>
+                      <span>Notes</span>
+                      <input
+                        className="field"
+                        placeholder="Preferred stylist, allergies, reminders"
+                        value={customerForm.notes}
+                        onChange={(event) => setCustomerForm((current) => ({ ...current, notes: event.target.value }))}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="customer-profile-stats">
+                    <div className="metric-card">
+                      <span>Visits</span>
+                      <strong>{customerProfile?.customer.visitsCount ?? '...'}</strong>
+                      <small>Total salon visits</small>
+                    </div>
+                    <div className="metric-card">
+                      <span>Loyalty points</span>
+                      <strong>{customerProfile?.customer.loyaltyPoints ?? '...'}</strong>
+                      <small>Available points</small>
+                    </div>
+                    <div className="metric-card">
+                      <span>Last visit</span>
+                      <strong>
+                        {customerProfile?.customer.lastVisitAt
+                          ? new Date(customerProfile.customer.lastVisitAt).toLocaleDateString()
+                          : '—'}
+                      </strong>
+                      <small>Most recent session</small>
+                    </div>
+                  </div>
+
+                  <div className="form-footer">
+                    <button className="primary-button" type="submit" disabled={customerFormStatus === 'saving'}>
+                      {customerFormStatus === 'saving'
+                        ? 'Saving...'
+                        : customerFormMode === 'edit'
+                          ? 'Save changes'
+                          : 'Add customer'}
+                    </button>
+                    <div className="form-message">
+                      {customerFormError ? (
+                        <span className="error-text">{customerFormError}</span>
+                      ) : customerFormStatus === 'saved' ? (
+                        <span className="success-text">Customer saved.</span>
+                      ) : (
+                        <span className="muted">
+                          {customerFormMode === 'edit' ? 'Update profile details and notes.' : 'Create a new customer profile.'}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </form>
+
+                <div className="customer-profile-grid">
+                  <section className="customer-profile-card">
+                    <div className="inventory-section-head">
+                      <div>
+                        <h3>Favorite services</h3>
+                        <span className="muted">Most requested treatments</span>
+                      </div>
+                    </div>
+                    <div className="customer-summary-list">
+                      {(customerProfile?.favoriteServices ?? []).length > 0 ? (
+                        customerProfile!.favoriteServices.map((service) => (
+                          <div className="customer-summary-item" key={service.serviceName}>
+                            <div>
+                              <strong>{service.serviceName}</strong>
+                              <span>{service.visitCount} visits</span>
+                            </div>
+                            <div className="right">
+                              <strong>{money.format(service.totalAmount)}</strong>
+                              <span>spent</span>
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <span className="muted">No visit history yet.</span>
+                      )}
+                    </div>
+                  </section>
+
+                  <section className="customer-profile-card">
+                    <div className="inventory-section-head">
+                      <div>
+                        <h3>Visit history</h3>
+                        <span className="muted">Latest salon visits</span>
+                      </div>
+                    </div>
+                    <div className="customer-history-list">
+                      {(customerProfile?.recentVisits ?? []).length > 0 ? (
+                        customerProfile!.recentVisits.map((visit) => (
+                          <div className="customer-history-item" key={visit.id}>
+                            <div>
+                              <strong>{visit.serviceName}</strong>
+                              <span>{visit.notes || 'No notes'}</span>
+                            </div>
+                            <div className="right">
+                              <strong>{money.format(visit.amount)}</strong>
+                              <span>
+                                {new Date(visit.createdAt).toLocaleDateString()} · {visit.pointsEarned} points
+                              </span>
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <span className="muted">No visits recorded for this customer.</span>
+                      )}
+                    </div>
+                  </section>
+                </div>
+
+                <div className="customer-profile-actions">
+                  <button className="danger-button" onClick={removeCustomer} disabled={!customerProfile || customerProfile.customer.isActive === 0}>
+                    Delete customer
+                  </button>
+                  <button className="ghost-button" onClick={openCustomerForm}>
+                    Clear selection
+                  </button>
                 </div>
               </section>
             </div>
