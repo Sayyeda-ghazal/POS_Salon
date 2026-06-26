@@ -45,6 +45,35 @@ interface Window {
         unitPrice: number;
         lineTotal: number;
       }>;
+      }>;
+    createProduct: (payload: {
+      sku: string;
+      barcode: string;
+      name: string;
+      category: string;
+      price: number;
+      stock: number;
+      taxRate: number;
+    }) => Promise<{
+      id: string;
+      sku: string;
+      barcode: string;
+      name: string;
+      category: string;
+      price: number;
+      stock: number;
+      taxRate: number;
+      isActive: number;
+    }>;
+    deleteProduct: (payload: { productId: string }) => Promise<{
+      productId: string;
+      name: string;
+      isActive: 0;
+    }>;
+    deleteProductPermanently: (payload: { productId: string }) => Promise<{
+      productId: string;
+      name: string;
+      removed: true;
     }>;
     getSyncStatus: () => Promise<{
       enabled: boolean;

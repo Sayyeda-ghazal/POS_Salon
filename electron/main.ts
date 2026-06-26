@@ -1,6 +1,17 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import path from 'node:path';
-import { adjustInventory, createSale, getRecentSales, getStats, initDb, listInventory, listProducts } from './db';
+import {
+  adjustInventory,
+  deleteProduct,
+  deleteProductPermanently,
+  createProduct,
+  createSale,
+  getRecentSales,
+  getStats,
+  initDb,
+  listInventory,
+  listProducts,
+} from './db';
 import { SyncService } from './sync';
 
 const isDev = !app.isPackaged;
@@ -45,9 +56,9 @@ function buildReceiptHtml(payload: {
     lineTotal: number;
   }>;
 }) {
-  const money = new Intl.NumberFormat('en-US', {
+  const money = new Intl.NumberFormat('en-PK', {
     style: 'currency',
-    currency: 'USD',
+    currency: 'PKR',
   });
 
   const rows = payload.detailedItems
@@ -140,6 +151,11 @@ app.whenReady().then(() => {
   ipcMain.handle('products:list', async () => listProducts());
   ipcMain.handle('sales:recent', async () => getRecentSales());
   ipcMain.handle('sales:create', async (_event, payload) => createSale(payload));
+  ipcMain.handle('products:create', async (_event, payload) => createProduct(payload));
+  ipcMain.handle('products:delete', async (_event, payload) => deleteProduct(payload));
+  ipcMain.handle('products:delete-permanent', async (_event, payload) =>
+    deleteProductPermanently(payload)
+  );
   ipcMain.handle('sync:status', async () => syncService.getStatus());
   ipcMain.handle('sync:run', async () => syncService.syncOnce());
   ipcMain.handle('inventory:list', async () => listInventory());

@@ -13,7 +13,9 @@
     "build:electron": "tsc -p tsconfig.electron.json",
     "build": "npm run build:electron && vite build",
     "preview": "vite preview",
-    "electron:build": "npm run build && electron-builder"
+    "electron:build": "npm run build && electron-builder",
+    "rebuild:native": "electron-builder install-app-deps",
+    "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
     "@neondatabase/serverless": "^0.10.4",

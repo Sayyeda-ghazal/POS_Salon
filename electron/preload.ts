@@ -5,6 +5,18 @@ contextBridge.exposeInMainWorld('pos', {
   getDashboard: () => ipcRenderer.invoke('dashboard:get'),
   listProducts: () => ipcRenderer.invoke('products:list'),
   getRecentSales: () => ipcRenderer.invoke('sales:recent'),
+  createProduct: (payload: {
+    sku: string;
+    barcode: string;
+    name: string;
+    category: string;
+    price: number;
+    stock: number;
+    taxRate: number;
+  }) => ipcRenderer.invoke('products:create', payload),
+  deleteProduct: (payload: { productId: string }) => ipcRenderer.invoke('products:delete', payload),
+  deleteProductPermanently: (payload: { productId: string }) =>
+    ipcRenderer.invoke('products:delete-permanent', payload),
   createSale: (payload: {
     cashierName: string;
     paymentMethod: string;
@@ -58,6 +70,35 @@ declare global {
         itemCount: number;
         createdAt: string;
       }>>;
+      createProduct: (payload: {
+        sku: string;
+        barcode: string;
+        name: string;
+        category: string;
+        price: number;
+        stock: number;
+        taxRate: number;
+      }) => Promise<{
+        id: string;
+        sku: string;
+        barcode: string;
+        name: string;
+        category: string;
+        price: number;
+        stock: number;
+        taxRate: number;
+        isActive: number;
+      }>;
+      deleteProduct: (payload: { productId: string }) => Promise<{
+        productId: string;
+        name: string;
+        isActive: 0;
+      }>;
+      deleteProductPermanently: (payload: { productId: string }) => Promise<{
+        productId: string;
+        name: string;
+        removed: true;
+      }>;
       createSale: (payload: {
         cashierName: string;
         paymentMethod: string;

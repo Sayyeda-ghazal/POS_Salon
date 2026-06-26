@@ -31,7 +31,7 @@ export type SyncQueueRow = {
   syncedAt: string | null;
 };
 
-let database: Database.Database | null = null;
+let database: InstanceType<typeof Database> | null = null;
 let initialized = false;
 
 function getDatabase() {
@@ -298,6 +298,65 @@ export function listInventory() {
     .all();
 }
 
+export function createProduct(payload: {
+  sku: string;
+  barcode: string;
+  name: string;
+  category: string;
+  price: number;
+  stock: number;
+  taxRate: number;
+}) {
+  const db = getDatabase();
+  const sku = payload.sku.trim();
+  const barcode = payload.barcode.trim();
+  const name = payload.name.trim();
+  const category = payload.category.trim();
+
+  if (!sku || !barcode || !name || !category) {
+    throw new Error('SKU, barcode, name, and category are required');
+  }
+  if (payload.price < 0) throw new Error('Price cannot be negative');
+  if (payload.stock < 0) throw new Error('Stock cannot be negative');
+  if (payload.taxRate < 0) throw new Error('Tax rate cannot be negative');
+
+  const existing = db
+    .prepare('SELECT id FROM products WHERE sku = ? OR barcode = ?')
+    .get(sku, barcode) as { id: string } | undefined;
+  if (existing) {
+    throw new Error('A product with the same SKU or barcode already exists');
+  }
+
+  const product = {
+    id: crypto.randomUUID(),
+    sku,
+    barcode,
+    name,
+    category,
+    price: money(payload.price),
+    stock: Math.trunc(payload.stock),
+    taxRate: payload.taxRate,
+    isActive: 1,
+  };
+
+  db.prepare(`
+    INSERT INTO products (id, sku, barcode, name, category, price, stock, taxRate, isActive)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    product.id,
+    product.sku,
+    product.barcode,
+    product.name,
+    product.category,
+    product.price,
+    product.stock,
+    product.taxRate,
+    product.isActive
+  );
+
+  return product;
+}
+
 export function adjustInventory(payload: {
   productId: string;
   delta: number;
@@ -339,6 +398,44 @@ export function adjustInventory(payload: {
   return {
     productId: payload.productId,
     stock: nextStock,
+  };
+}
+
+export function deleteProduct(payload: { productId: string }) {
+  const db = getDatabase();
+  const product = db
+    .prepare('SELECT id, name, isActive FROM products WHERE id = ?')
+    .get(payload.productId) as { id: string; name: string; isActive: number } | undefined;
+  if (!product) throw new Error('Product not found');
+  if (product.isActive === 0) {
+    throw new Error('Product is already deleted');
+  }
+
+  db.prepare('UPDATE products SET isActive = 0 WHERE id = ?').run(payload.productId);
+
+  return {
+    productId: payload.productId,
+    name: product.name,
+    isActive: 0,
+  };
+}
+
+export function deleteProductPermanently(payload: { productId: string }) {
+  const db = getDatabase();
+  const product = db
+    .prepare('SELECT id, name, isActive FROM products WHERE id = ?')
+    .get(payload.productId) as { id: string; name: string; isActive: number } | undefined;
+  if (!product) throw new Error('Product not found');
+  if (product.isActive !== 0) {
+    throw new Error('Only already deleted items can be removed permanently');
+  }
+
+  db.prepare('DELETE FROM products WHERE id = ?').run(payload.productId);
+
+  return {
+    productId: payload.productId,
+    name: product.name,
+    removed: true,
   };
 }
 
