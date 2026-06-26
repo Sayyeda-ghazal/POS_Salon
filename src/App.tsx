@@ -3,7 +3,29 @@ import type { Product } from '../electron/schema';
 
 type CartLine = Product & { quantity: number };
 type InventoryRow = Product;
-type ViewMode = 'pos' | 'inventory';
+type CustomerRow = {
+  id: string;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  loyaltyPoints: number;
+  visitsCount: number;
+  lastVisitAt: string | null;
+  createdAt: string;
+  isActive: number;
+};
+type VisitRow = {
+  id: string;
+  customerId: string | null;
+  customerName: string;
+  serviceName: string;
+  amount: number;
+  pointsEarned: number;
+  notes: string | null;
+  createdAt: string;
+  source: string;
+};
+type ViewMode = 'dashboard' | 'pos' | 'inventory';
 type SaleResult = {
   id: string;
   receiptNo: string;
@@ -22,6 +44,22 @@ type SaleResult = {
   cashierName: string;
   paymentMethod: string;
 };
+type DashboardSummary = {
+  salesToday: number;
+  receiptCount: number;
+  productCount: number;
+  customerCount: number;
+  visitsToday: number;
+  revenueToday: number;
+  monthlyRevenue: number;
+  loyaltyPointsTotal: number;
+  pointsEarnedToday: number;
+  averageVisitValue: number;
+  recentVisits: VisitRow[];
+  pendingSync: number;
+  online: boolean;
+  registerName: string;
+};
 
 const money = new Intl.NumberFormat('en-PK', {
   style: 'currency',
@@ -34,14 +72,7 @@ function App() {
   const [products, setProducts] = useState<Product[]>([]);
   const [inventory, setInventory] = useState<InventoryRow[]>([]);
   const [recentSales, setRecentSales] = useState<Array<any>>([]);
-  const [dashboard, setDashboard] = useState<{
-    salesToday: number;
-    receiptCount: number;
-    productCount: number;
-    pendingSync: number;
-    online: boolean;
-    registerName: string;
-  } | null>(null);
+  const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
   const [syncStatus, setSyncStatus] = useState<{
     enabled: boolean;
     syncing: boolean;
@@ -55,7 +86,7 @@ function App() {
   const [query, setQuery] = useState('');
   const [cart, setCart] = useState<CartLine[]>([]);
   const [status, setStatus] = useState<'ready' | 'saved'>('ready');
-  const [view, setView] = useState<ViewMode>('pos');
+  const [view, setView] = useState<ViewMode>('dashboard');
   const [newItem, setNewItem] = useState({
     sku: '',
     barcode: '',
@@ -68,6 +99,25 @@ function App() {
   const [newItemStatus, setNewItemStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [newItemError, setNewItemError] = useState('');
   const [showDeletedItems, setShowDeletedItems] = useState(false);
+  const [newCustomer, setNewCustomer] = useState({
+    name: '',
+    phone: '',
+    email: '',
+  });
+  const [newCustomerStatus, setNewCustomerStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [newCustomerError, setNewCustomerError] = useState('');
+  const [newVisit, setNewVisit] = useState({
+    customerId: 'walk-in',
+    serviceName: '',
+    amount: '0.00',
+    notes: '',
+  });
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [customerMatches, setCustomerMatches] = useState<CustomerRow[]>([]);
+  const [customerSearchStatus, setCustomerSearchStatus] = useState<'idle' | 'loading'>('idle');
+  const [selectedVisitCustomer, setSelectedVisitCustomer] = useState<CustomerRow | null>(null);
+  const [newVisitStatus, setNewVisitStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [newVisitError, setNewVisitError] = useState('');
   const scanBuffer = useRef('');
   const scanTimer = useRef<number | null>(null);
 
@@ -122,6 +172,32 @@ function App() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [products, view]);
+
+  useEffect(() => {
+    let active = true;
+    setCustomerSearchStatus('loading');
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const matches = await window.pos.findCustomers({
+          query: customerSearch,
+          limit: 8,
+        });
+        if (!active) return;
+        setCustomerMatches(matches);
+      } catch {
+        if (!active) return;
+        setCustomerMatches([]);
+      } finally {
+        if (active) setCustomerSearchStatus('idle');
+      }
+    }, 200);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [customerSearch]);
 
   const filteredProducts = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -275,6 +351,59 @@ function App() {
     }
   };
 
+  const createNewCustomer = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setNewCustomerStatus('saving');
+    setNewCustomerError('');
+
+    try {
+      await window.pos.createCustomer({
+        name: newCustomer.name,
+        phone: newCustomer.phone || undefined,
+        email: newCustomer.email || undefined,
+      });
+      setNewCustomer({ name: '', phone: '', email: '' });
+      setNewCustomerStatus('saved');
+      await refreshData();
+    } catch (error) {
+      setNewCustomerStatus('error');
+      setNewCustomerError(error instanceof Error ? error.message : 'Could not create customer');
+    }
+  };
+
+  const createNewVisit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setNewVisitStatus('saving');
+    setNewVisitError('');
+
+    try {
+      const selectedCustomerId = newVisit.customerId === 'walk-in' ? null : newVisit.customerId;
+      const selectedCustomer = selectedCustomerId ? selectedVisitCustomer : null;
+
+      await window.pos.createVisit({
+        customerId: selectedCustomerId,
+        customerName: selectedCustomer?.name,
+        serviceName: newVisit.serviceName,
+        amount: Number(newVisit.amount),
+        notes: newVisit.notes || undefined,
+      });
+      setNewVisit({
+        customerId: 'walk-in',
+        serviceName: '',
+        amount: '0.00',
+        notes: '',
+      });
+      setCustomerSearch('');
+      setCustomerMatches([]);
+      setSelectedVisitCustomer(null);
+      setNewVisitStatus('saved');
+      await refreshData();
+    } catch (error) {
+      setNewVisitStatus('error');
+      setNewVisitError(error instanceof Error ? error.message : 'Could not create visit');
+    }
+  };
+
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -295,16 +424,16 @@ function App() {
           </div>
           <div className="status-grid">
             <div>
-              <strong>{dashboard ? money.format(dashboard.salesToday) : '...'}</strong>
-              <span>Sales today</span>
+              <strong>{dashboard ? money.format(dashboard.revenueToday) : '...'}</strong>
+              <span>Revenue today</span>
             </div>
             <div>
-              <strong>{dashboard?.receiptCount ?? '...'}</strong>
-              <span>Receipts</span>
+              <strong>{dashboard?.visitsToday ?? '...'}</strong>
+              <span>Visits</span>
             </div>
             <div>
-              <strong>{dashboard?.productCount ?? '...'}</strong>
-              <span>Products</span>
+              <strong>{dashboard?.customerCount ?? '...'}</strong>
+              <span>Customers</span>
             </div>
             <div>
               <strong>{dashboard?.pendingSync ?? '...'}</strong>
@@ -338,17 +467,17 @@ function App() {
         </div>
 
         <div className="panel">
-          <h2>Recent Sales</h2>
+          <h2>Recent Visits</h2>
           <div className="list">
-            {recentSales.map((sale) => (
-              <div className="list-item" key={sale.id}>
+            {dashboard?.recentVisits.slice(0, 5).map((visit) => (
+              <div className="list-item" key={visit.id}>
                 <div>
-                  <strong>{sale.receiptNo}</strong>
-                  <span>{sale.cashierName}</span>
+                  <strong>{visit.customerName}</strong>
+                  <span>{visit.serviceName}</span>
                 </div>
                 <div className="right">
-                  <strong>{money.format(sale.grandTotal)}</strong>
-                  <span>{new Date(sale.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                  <strong>{money.format(visit.amount)}</strong>
+                  <span>{new Date(visit.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                 </div>
               </div>
             ))}
@@ -359,10 +488,17 @@ function App() {
       <main className="main">
         <header className="topbar">
           <div>
-            <p className="eyebrow">Cashier station</p>
-            <h2>Fast checkout, built to feel calm and premium.</h2>
+            <p className="eyebrow">{view === 'dashboard' ? 'Front desk' : 'Cashier station'}</p>
+            <h2>
+              {view === 'dashboard'
+                ? 'Parlor dashboard for customers, visits, and loyalty.'
+                : 'Fast checkout, built to feel calm and premium.'}
+            </h2>
           </div>
           <div className="toolbar">
+            <button className={`ghost-button ${view === 'dashboard' ? 'ghost-active' : ''}`} onClick={() => setView('dashboard')}>
+              Dashboard
+            </button>
             <button className={`ghost-button ${view === 'pos' ? 'ghost-active' : ''}`} onClick={() => setView('pos')}>
               POS
             </button>
@@ -370,12 +506,255 @@ function App() {
               className={`ghost-button ${view === 'inventory' ? 'ghost-active' : ''}`}
               onClick={() => setView('inventory')}
             >
-              Inventory
+              Services
             </button>
           </div>
         </header>
 
-        {view === 'pos' ? (
+        {view === 'dashboard' ? (
+          <section className="dashboard-view">
+            <div className="dashboard-hero">
+              <div>
+                <p className="eyebrow">Dashboard</p>
+                <h3>Everything the front desk needs in one glance.</h3>
+                <p className="muted">
+                  Track customers, today's visits, revenue, and loyalty points while keeping quick actions close by.
+                </p>
+              </div>
+              <div className="dashboard-hero-actions">
+                <button className="ghost-button" onClick={() => setView('pos')}>
+                  New Sale
+                </button>
+                <button className="ghost-button" onClick={() => setView('inventory')}>
+                  Services
+                </button>
+              </div>
+            </div>
+
+            <div className="dashboard-metrics">
+              <div className="metric-card">
+                <span>Total customers</span>
+                <strong>{dashboard?.customerCount ?? '...'}</strong>
+                <small>Active client profiles</small>
+              </div>
+              <div className="metric-card">
+                <span>Today's visits</span>
+                <strong>{dashboard?.visitsToday ?? '...'}</strong>
+                <small>Walk-ins and booked sessions</small>
+              </div>
+              <div className="metric-card">
+                <span>Revenue summary</span>
+                <strong>{dashboard ? money.format(dashboard.revenueToday) : '...'}</strong>
+                <small>{dashboard ? `${money.format(dashboard.monthlyRevenue)} this month` : 'Monthly revenue'}</small>
+              </div>
+              <div className="metric-card">
+                <span>Loyalty points</span>
+                <strong>{dashboard?.loyaltyPointsTotal ?? '...'}</strong>
+                <small>{dashboard?.pointsEarnedToday ?? 0} earned today</small>
+              </div>
+            </div>
+
+            <div className="dashboard-grid">
+              <section className="panel dashboard-panel">
+                <div className="dashboard-panel-head">
+                  <div>
+                    <p className="eyebrow">Quick actions</p>
+                    <h2>Add Customer / New Visit</h2>
+                  </div>
+                  <span className="pill pill-offline">Local first</span>
+                </div>
+
+                <div className="quick-actions-grid">
+                  <form className="mini-form" onSubmit={createNewCustomer}>
+                    <h3>Add Customer</h3>
+                    <div className="form-grid">
+                      <label>
+                        <span>Name</span>
+                        <input
+                          className="field"
+                          placeholder="Ayesha Khan"
+                          value={newCustomer.name}
+                          onChange={(event) => setNewCustomer((current) => ({ ...current, name: event.target.value }))}
+                          required
+                        />
+                      </label>
+                      <label>
+                        <span>Phone</span>
+                        <input
+                          className="field"
+                          placeholder="0300-1234567"
+                          value={newCustomer.phone}
+                          onChange={(event) => setNewCustomer((current) => ({ ...current, phone: event.target.value }))}
+                        />
+                      </label>
+                      <label className="full-width">
+                        <span>Email</span>
+                        <input
+                          className="field"
+                          placeholder="client@example.com"
+                          value={newCustomer.email}
+                          onChange={(event) => setNewCustomer((current) => ({ ...current, email: event.target.value }))}
+                        />
+                      </label>
+                    </div>
+                    <div className="form-footer">
+                      <button className="primary-button" type="submit" disabled={newCustomerStatus === 'saving'}>
+                        {newCustomerStatus === 'saving' ? 'Saving...' : 'Add Customer'}
+                      </button>
+                      <div className="form-message">
+                        {newCustomerError ? (
+                          <span className="error-text">{newCustomerError}</span>
+                        ) : newCustomerStatus === 'saved' ? (
+                          <span className="success-text">Customer saved.</span>
+                        ) : (
+                          <span className="muted">Store local customer profiles.</span>
+                        )}
+                      </div>
+                    </div>
+                  </form>
+
+                  <form className="mini-form" onSubmit={createNewVisit}>
+                    <h3>New Visit</h3>
+                    <div className="form-grid">
+                      <label>
+                        <span>Customer</span>
+                        <input
+                          className="field"
+                          placeholder="Search customer name or phone"
+                          value={customerSearch}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            setCustomerSearch(value);
+                            setSelectedVisitCustomer(null);
+                            setNewVisit((current) => ({ ...current, customerId: 'walk-in' }));
+                          }}
+                        />
+                      </label>
+                      <div className="customer-results full-width">
+                        <button
+                          type="button"
+                          className={`customer-result ${newVisit.customerId === 'walk-in' ? 'customer-result-selected' : ''}`}
+                          onClick={() => {
+                            setNewVisit((current) => ({ ...current, customerId: 'walk-in' }));
+                            setCustomerSearch('');
+                            setCustomerMatches([]);
+                            setSelectedVisitCustomer(null);
+                          }}
+                        >
+                          <strong>Walk-in</strong>
+                          <span>Use when the customer is not in the system yet.</span>
+                        </button>
+                        {customerSearchStatus === 'loading' ? <span className="muted">Searching customers...</span> : null}
+                        {customerMatches.map((customer) => (
+                          <button
+                            type="button"
+                            key={customer.id}
+                            className={`customer-result ${
+                              newVisit.customerId === customer.id ? 'customer-result-selected' : ''
+                            }`}
+                            onClick={() => {
+                              setNewVisit((current) => ({ ...current, customerId: customer.id }));
+                              setCustomerSearch(customer.name);
+                              setCustomerMatches([]);
+                              setSelectedVisitCustomer(customer);
+                            }}
+                          >
+                            <strong>{customer.name}</strong>
+                            <span>
+                              {customer.phone || 'No phone'}
+                              {customer.visitsCount ? ` · ${customer.visitsCount} visits` : ''}
+                            </span>
+                          </button>
+                        ))}
+                        {customerSearch && customerSearchStatus === 'idle' && customerMatches.length === 0 ? (
+                          <span className="muted">No matching customers found.</span>
+                        ) : null}
+                      </div>
+                      <label>
+                        <span>Amount</span>
+                        <input
+                          className="field"
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          placeholder="1500"
+                          value={newVisit.amount}
+                          onChange={(event) => setNewVisit((current) => ({ ...current, amount: event.target.value }))}
+                          required
+                        />
+                      </label>
+                      <label className="full-width">
+                        <span>Service</span>
+                        <input
+                          className="field"
+                          placeholder="Hair color / Facial / Manicure"
+                          value={newVisit.serviceName}
+                          onChange={(event) =>
+                            setNewVisit((current) => ({ ...current, serviceName: event.target.value }))
+                          }
+                          required
+                        />
+                      </label>
+                      <label className="full-width">
+                        <span>Notes</span>
+                        <input
+                          className="field"
+                          placeholder="Preferred stylist, follow-up, etc."
+                          value={newVisit.notes}
+                          onChange={(event) => setNewVisit((current) => ({ ...current, notes: event.target.value }))}
+                        />
+                      </label>
+                    </div>
+                    <div className="form-footer">
+                      <button className="primary-button" type="submit" disabled={newVisitStatus === 'saving'}>
+                        {newVisitStatus === 'saving' ? 'Saving...' : 'New Visit'}
+                      </button>
+                      <div className="form-message">
+                        {newVisitError ? (
+                          <span className="error-text">{newVisitError}</span>
+                        ) : newVisitStatus === 'saved' ? (
+                          <span className="success-text">Visit logged.</span>
+                        ) : (
+                          <span className="muted">Earn loyalty points on paid visits.</span>
+                        )}
+                      </div>
+                    </div>
+                  </form>
+                </div>
+              </section>
+
+              <section className="panel dashboard-panel">
+                <div className="dashboard-panel-head">
+                  <div>
+                    <p className="eyebrow">Recent visits</p>
+                    <h2>Today and latest</h2>
+                  </div>
+                  <span className="pill pill-online">{dashboard?.recentVisits.length ?? 0} logged</span>
+                </div>
+                <div className="list dashboard-visit-list">
+                  {(dashboard?.recentVisits ?? []).map((visit) => (
+                    <div className="list-item" key={visit.id}>
+                      <div>
+                        <strong>{visit.customerName}</strong>
+                        <span>
+                          {visit.serviceName}
+                          {visit.notes ? ` · ${visit.notes}` : ''}
+                        </span>
+                      </div>
+                      <div className="right">
+                        <strong>{money.format(visit.amount)}</strong>
+                        <span>
+                          {visit.pointsEarned} points ·{' '}
+                          {new Date(visit.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </div>
+          </section>
+        ) : view === 'pos' ? (
           <section className="workspace">
           <div className="catalog">
             <div className="search-wrap">

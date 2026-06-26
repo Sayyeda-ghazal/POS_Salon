@@ -4,11 +4,51 @@ interface Window {
       salesToday: number;
       receiptCount: number;
       productCount: number;
+      customerCount: number;
+      visitsToday: number;
+      revenueToday: number;
+      monthlyRevenue: number;
+      loyaltyPointsTotal: number;
+      pointsEarnedToday: number;
+      averageVisitValue: number;
+      recentVisits: Array<{
+        id: string;
+        customerId: string | null;
+        customerName: string;
+        serviceName: string;
+        amount: number;
+        pointsEarned: number;
+        notes: string | null;
+        createdAt: string;
+        source: string;
+      }>;
       pendingSync: number;
       online: boolean;
       registerName: string;
     }>;
     listProducts: () => Promise<import('../electron/schema').Product[]>;
+    listCustomers: () => Promise<Array<{
+      id: string;
+      name: string;
+      phone: string | null;
+      email: string | null;
+      loyaltyPoints: number;
+      visitsCount: number;
+      lastVisitAt: string | null;
+      createdAt: string;
+      isActive: number;
+    }>>;
+    findCustomers: (payload: { query?: string; limit?: number }) => Promise<Array<{
+      id: string;
+      name: string;
+      phone: string | null;
+      email: string | null;
+      loyaltyPoints: number;
+      visitsCount: number;
+      lastVisitAt: string | null;
+      createdAt: string;
+      isActive: number;
+    }>>;
     getRecentSales: () => Promise<Array<{
       id: string;
       receiptNo: string;
@@ -21,6 +61,34 @@ interface Window {
       itemCount: number;
       createdAt: string;
     }>>;
+    createCustomer: (payload: { name: string; phone?: string; email?: string }) => Promise<{
+      id: string;
+      name: string;
+      phone: string | null;
+      email: string | null;
+      loyaltyPoints: number;
+      visitsCount: number;
+      lastVisitAt: string | null;
+      createdAt: string;
+      isActive: number;
+    }>;
+    createVisit: (payload: {
+      customerId?: string | null;
+      customerName?: string;
+      serviceName: string;
+      amount: number;
+      notes?: string;
+    }) => Promise<{
+      id: string;
+      customerId: string | null;
+      customerName: string;
+      serviceName: string;
+      amount: number;
+      pointsEarned: number;
+      notes: string | null;
+      createdAt: string;
+      source: string;
+    }>;
     createSale: (payload: {
       cashierName: string;
       paymentMethod: string;

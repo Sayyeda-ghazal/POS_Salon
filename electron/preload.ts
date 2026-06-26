@@ -4,7 +4,18 @@ import type { Product } from './schema';
 contextBridge.exposeInMainWorld('pos', {
   getDashboard: () => ipcRenderer.invoke('dashboard:get'),
   listProducts: () => ipcRenderer.invoke('products:list'),
+  listCustomers: () => ipcRenderer.invoke('customers:list'),
+  findCustomers: (payload: { query?: string; limit?: number }) => ipcRenderer.invoke('customers:find', payload),
   getRecentSales: () => ipcRenderer.invoke('sales:recent'),
+  createCustomer: (payload: { name: string; phone?: string; email?: string }) =>
+    ipcRenderer.invoke('customers:create', payload),
+  createVisit: (payload: {
+    customerId?: string | null;
+    customerName?: string;
+    serviceName: string;
+    amount: number;
+    notes?: string;
+  }) => ipcRenderer.invoke('visits:create', payload),
   createProduct: (payload: {
     sku: string;
     barcode: string;
@@ -53,11 +64,51 @@ declare global {
         salesToday: number;
         receiptCount: number;
         productCount: number;
+        customerCount: number;
+        visitsToday: number;
+        revenueToday: number;
+        monthlyRevenue: number;
+        loyaltyPointsTotal: number;
+        pointsEarnedToday: number;
+        averageVisitValue: number;
+        recentVisits: Array<{
+          id: string;
+          customerId: string | null;
+          customerName: string;
+          serviceName: string;
+          amount: number;
+          pointsEarned: number;
+          notes: string | null;
+          createdAt: string;
+          source: string;
+        }>;
         pendingSync: number;
         online: boolean;
         registerName: string;
       }>;
       listProducts: () => Promise<Product[]>;
+      listCustomers: () => Promise<Array<{
+        id: string;
+        name: string;
+        phone: string | null;
+        email: string | null;
+        loyaltyPoints: number;
+        visitsCount: number;
+        lastVisitAt: string | null;
+        createdAt: string;
+        isActive: number;
+      }>>;
+      findCustomers: (payload: { query?: string; limit?: number }) => Promise<Array<{
+        id: string;
+        name: string;
+        phone: string | null;
+        email: string | null;
+        loyaltyPoints: number;
+        visitsCount: number;
+        lastVisitAt: string | null;
+        createdAt: string;
+        isActive: number;
+      }>>;
       getRecentSales: () => Promise<Array<{
         id: string;
         receiptNo: string;
@@ -70,6 +121,34 @@ declare global {
         itemCount: number;
         createdAt: string;
       }>>;
+      createCustomer: (payload: { name: string; phone?: string; email?: string }) => Promise<{
+        id: string;
+        name: string;
+        phone: string | null;
+        email: string | null;
+        loyaltyPoints: number;
+        visitsCount: number;
+        lastVisitAt: string | null;
+        createdAt: string;
+        isActive: number;
+      }>;
+      createVisit: (payload: {
+        customerId?: string | null;
+        customerName?: string;
+        serviceName: string;
+        amount: number;
+        notes?: string;
+      }) => Promise<{
+        id: string;
+        customerId: string | null;
+        customerName: string;
+        serviceName: string;
+        amount: number;
+        pointsEarned: number;
+        notes: string | null;
+        createdAt: string;
+        source: string;
+      }>;
       createProduct: (payload: {
         sku: string;
         barcode: string;

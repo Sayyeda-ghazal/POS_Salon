@@ -90,6 +90,10 @@ export class SyncService {
           await syncSale(sql, row);
         } else if (row.entityType === 'inventory_movement') {
           await syncInventoryMovement(sql, row);
+        } else if (row.entityType === 'customer') {
+          await syncCustomer(sql, row);
+        } else if (row.entityType === 'visit') {
+          await syncVisit(sql, row);
         }
         syncedCount += 1;
       }
@@ -152,6 +156,34 @@ async function ensureSchema(sql: NeonClient) {
       delta INTEGER NOT NULL,
       reason TEXT NOT NULL,
       created_at TEXT NOT NULL
+    )
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS customers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      phone TEXT,
+      email TEXT,
+      loyalty_points INTEGER NOT NULL DEFAULT 0,
+      visits_count INTEGER NOT NULL DEFAULT 0,
+      last_visit_at TEXT,
+      created_at TEXT NOT NULL,
+      is_active INTEGER NOT NULL DEFAULT 1
+    )
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS visits (
+      id TEXT PRIMARY KEY,
+      customer_id TEXT,
+      customer_name TEXT NOT NULL,
+      service_name TEXT NOT NULL,
+      amount REAL NOT NULL,
+      points_earned INTEGER NOT NULL DEFAULT 0,
+      notes TEXT,
+      created_at TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'manual'
     )
   `;
 }
@@ -251,6 +283,91 @@ async function syncInventoryMovement(sql: NeonClient, row: SyncQueueRow) {
       ${payload.delta},
       ${payload.reason},
       ${row.createdAt}
+    )
+    ON CONFLICT (id) DO NOTHING
+  `;
+}
+
+async function syncCustomer(sql: NeonClient, row: SyncQueueRow) {
+  const payload = JSON.parse(row.payload) as {
+    id: string;
+    name: string;
+    phone: string | null;
+    email: string | null;
+    loyaltyPoints: number;
+    visitsCount: number;
+    lastVisitAt: string | null;
+    createdAt: string;
+    isActive: number;
+  };
+
+  await sql`
+    INSERT INTO customers (
+      id,
+      name,
+      phone,
+      email,
+      loyalty_points,
+      visits_count,
+      last_visit_at,
+      created_at,
+      is_active
+    ) VALUES (
+      ${payload.id},
+      ${payload.name},
+      ${payload.phone},
+      ${payload.email},
+      ${payload.loyaltyPoints},
+      ${payload.visitsCount},
+      ${payload.lastVisitAt},
+      ${payload.createdAt},
+      ${payload.isActive}
+    )
+    ON CONFLICT (id) DO UPDATE SET
+      name = EXCLUDED.name,
+      phone = EXCLUDED.phone,
+      email = EXCLUDED.email,
+      loyalty_points = EXCLUDED.loyalty_points,
+      visits_count = EXCLUDED.visits_count,
+      last_visit_at = EXCLUDED.last_visit_at,
+      is_active = EXCLUDED.is_active
+  `;
+}
+
+async function syncVisit(sql: NeonClient, row: SyncQueueRow) {
+  const payload = JSON.parse(row.payload) as {
+    id: string;
+    customerId: string | null;
+    customerName: string;
+    serviceName: string;
+    amount: number;
+    pointsEarned: number;
+    notes: string | null;
+    createdAt: string;
+    source: string;
+  };
+
+  await sql`
+    INSERT INTO visits (
+      id,
+      customer_id,
+      customer_name,
+      service_name,
+      amount,
+      points_earned,
+      notes,
+      created_at,
+      source
+    ) VALUES (
+      ${payload.id},
+      ${payload.customerId},
+      ${payload.customerName},
+      ${payload.serviceName},
+      ${payload.amount},
+      ${payload.pointsEarned},
+      ${payload.notes},
+      ${payload.createdAt},
+      ${payload.source}
     )
     ON CONFLICT (id) DO NOTHING
   `;

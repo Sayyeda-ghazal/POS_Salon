@@ -5,10 +5,14 @@ import {
   deleteProduct,
   deleteProductPermanently,
   createProduct,
+  createCustomer,
+  createVisit,
   createSale,
   getRecentSales,
   getStats,
   initDb,
+  findCustomers,
+  listCustomers,
   listInventory,
   listProducts,
 } from './db';
@@ -149,8 +153,12 @@ app.whenReady().then(() => {
   initDb();
   ipcMain.handle('dashboard:get', async () => getStats());
   ipcMain.handle('products:list', async () => listProducts());
+  ipcMain.handle('customers:list', async () => listCustomers());
+  ipcMain.handle('customers:find', async (_event, payload) => findCustomers(payload?.query ?? '', payload?.limit ?? 10));
   ipcMain.handle('sales:recent', async () => getRecentSales());
   ipcMain.handle('sales:create', async (_event, payload) => createSale(payload));
+  ipcMain.handle('customers:create', async (_event, payload) => createCustomer(payload));
+  ipcMain.handle('visits:create', async (_event, payload) => createVisit(payload));
   ipcMain.handle('products:create', async (_event, payload) => createProduct(payload));
   ipcMain.handle('products:delete', async (_event, payload) => deleteProduct(payload));
   ipcMain.handle('products:delete-permanent', async (_event, payload) =>

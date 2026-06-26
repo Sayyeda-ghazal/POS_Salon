@@ -21,6 +21,30 @@ type SaleRecord = SaleSummary & {
   }>;
 };
 
+type CustomerRecord = {
+  id: string;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  loyaltyPoints: number;
+  visitsCount: number;
+  lastVisitAt: string | null;
+  createdAt: string;
+  isActive: number;
+};
+
+type VisitRecord = {
+  id: string;
+  customerId: string | null;
+  customerName: string;
+  serviceName: string;
+  amount: number;
+  pointsEarned: number;
+  notes: string | null;
+  createdAt: string;
+  source: string;
+};
+
 export type SyncQueueRow = {
   id: string;
   entityType: string;
@@ -102,6 +126,39 @@ export function initDb() {
       reason TEXT NOT NULL,
       createdAt TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS customers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      phone TEXT,
+      email TEXT,
+      loyaltyPoints INTEGER NOT NULL DEFAULT 0,
+      visitsCount INTEGER NOT NULL DEFAULT 0,
+      lastVisitAt TEXT,
+      createdAt TEXT NOT NULL,
+      isActive INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS visits (
+      id TEXT PRIMARY KEY,
+      customerId TEXT,
+      customerName TEXT NOT NULL,
+      serviceName TEXT NOT NULL,
+      amount REAL NOT NULL,
+      pointsEarned INTEGER NOT NULL DEFAULT 0,
+      notes TEXT,
+      createdAt TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'manual'
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_products_active_category_name ON products (isActive, category, name);
+    CREATE INDEX IF NOT EXISTS idx_products_barcode ON products (barcode);
+    CREATE INDEX IF NOT EXISTS idx_products_sku ON products (sku);
+    CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales (createdAt);
+    CREATE INDEX IF NOT EXISTS idx_visits_created_at ON visits (createdAt);
+    CREATE INDEX IF NOT EXISTS idx_customers_active_name ON customers (isActive, name);
+    CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers (phone);
+    CREATE INDEX IF NOT EXISTS idx_sync_queue_status_created_at ON sync_queue (status, createdAt);
   `);
 
   const count = db.prepare('SELECT COUNT(*) as count FROM products').get() as { count: number };
@@ -120,6 +177,47 @@ export function initDb() {
     for (const row of rows) seed.run(row);
   }
 
+  const customerCount = db.prepare('SELECT COUNT(*) as count FROM customers').get() as { count: number };
+  if (customerCount.count === 0) {
+    const seedCustomer = db.prepare(`
+      INSERT INTO customers (id, name, phone, email, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive)
+      VALUES (@id, @name, @phone, @email, @loyaltyPoints, @visitsCount, @lastVisitAt, @createdAt, 1)
+    `);
+    const rows = [
+      {
+        id: crypto.randomUUID(),
+        name: 'Ayesha Khan',
+        phone: '0300-1111111',
+        email: 'ayesha@example.com',
+        loyaltyPoints: 24,
+        visitsCount: 6,
+        lastVisitAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+      },
+      {
+        id: crypto.randomUUID(),
+        name: 'Sara Ali',
+        phone: '0300-2222222',
+        email: 'sara@example.com',
+        loyaltyPoints: 12,
+        visitsCount: 3,
+        lastVisitAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+      },
+      {
+        id: crypto.randomUUID(),
+        name: 'Maira Shah',
+        phone: '0300-3333333',
+        email: 'maira@example.com',
+        loyaltyPoints: 8,
+        visitsCount: 2,
+        lastVisitAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+      },
+    ];
+    for (const row of rows) seedCustomer.run(row);
+  }
+
   initialized = true;
 }
 
@@ -131,23 +229,51 @@ export function listProducts(): Product[] {
 
 export function getStats() {
   const db = getDatabase();
-  const salesToday = db
-    .prepare(`SELECT COALESCE(SUM(grandTotal), 0) as total FROM sales WHERE date(createdAt) = date('now')`)
+  const revenueToday = db
+    .prepare(`SELECT COALESCE(SUM(amount), 0) as total FROM visits WHERE date(createdAt) = date('now')`)
     .get() as { total: number };
-  const receiptCount = db
-    .prepare(`SELECT COUNT(*) as count FROM sales WHERE date(createdAt) = date('now')`)
+  const visitsToday = db
+    .prepare(`SELECT COUNT(*) as count FROM visits WHERE date(createdAt) = date('now')`)
     .get() as { count: number };
   const productCount = db
     .prepare('SELECT COUNT(*) as count FROM products WHERE isActive = 1')
     .get() as { count: number };
+  const customerCount = db
+    .prepare('SELECT COUNT(*) as count FROM customers WHERE isActive = 1')
+    .get() as { count: number };
+  const loyaltyPointsTotal = db
+    .prepare('SELECT COALESCE(SUM(loyaltyPoints), 0) as total FROM customers WHERE isActive = 1')
+    .get() as { total: number };
+  const pointsEarnedToday = db
+    .prepare(`SELECT COALESCE(SUM(pointsEarned), 0) as total FROM visits WHERE date(createdAt) = date('now')`)
+    .get() as { total: number };
+  const monthlyRevenue = db
+    .prepare(`SELECT COALESCE(SUM(amount), 0) as total FROM visits WHERE strftime('%Y-%m', createdAt) = strftime('%Y-%m', 'now')`)
+    .get() as { total: number };
   const pendingSync = db
     .prepare(`SELECT COUNT(*) as count FROM sync_queue WHERE status = 'pending'`)
     .get() as { count: number };
+  const recentVisits = db
+    .prepare(
+      `SELECT id, customerId, customerName, serviceName, amount, pointsEarned, notes, createdAt, source
+       FROM visits
+       ORDER BY createdAt DESC
+       LIMIT 6`
+    )
+    .all() as VisitRecord[];
 
   return {
-    salesToday: money(salesToday.total),
-    receiptCount: receiptCount.count,
+    salesToday: money(revenueToday.total),
+    receiptCount: visitsToday.count,
     productCount: productCount.count,
+    customerCount: customerCount.count,
+    visitsToday: visitsToday.count,
+    revenueToday: money(revenueToday.total),
+    monthlyRevenue: money(monthlyRevenue.total),
+    loyaltyPointsTotal: loyaltyPointsTotal.total,
+    pointsEarnedToday: pointsEarnedToday.total,
+    averageVisitValue: visitsToday.count > 0 ? money(revenueToday.total / visitsToday.count) : 0,
+    recentVisits,
     pendingSync: pendingSync.count,
     online: false,
     registerName: 'Front Counter 01',
@@ -230,6 +356,7 @@ export function createSale(payload: {
       INSERT INTO sync_queue (id, entityType, entityId, payload, status, createdAt)
       VALUES (?, ?, ?, ?, 'pending', ?)
     `);
+    const visitId = crypto.randomUUID();
 
     for (const item of saleItemRows) {
       insertItem.run(
@@ -244,6 +371,21 @@ export function createSale(payload: {
       updateStock.run(item.quantity, item.productId);
       insertMovement.run(crypto.randomUUID(), item.productId, -item.quantity, 'sale', createdAt);
     }
+
+    db.prepare(`
+      INSERT INTO visits (id, customerId, customerName, serviceName, amount, pointsEarned, notes, createdAt, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      visitId,
+      null,
+      'Walk-in',
+      `POS Sale (${payload.paymentMethod})`,
+      grandTotal,
+      0,
+      null,
+      createdAt,
+      'sale'
+    );
 
     queue.run(
       crypto.randomUUID(),
@@ -260,6 +402,23 @@ export function createSale(payload: {
         grandTotal,
         detailedItems: saleItemRows,
         createdAt,
+      }),
+      createdAt
+    );
+    queue.run(
+      crypto.randomUUID(),
+      'visit',
+      visitId,
+      JSON.stringify({
+        id: visitId,
+        customerId: null,
+        customerName: 'Walk-in',
+        serviceName: `POS Sale (${payload.paymentMethod})`,
+        amount: grandTotal,
+        pointsEarned: 0,
+        notes: null,
+        createdAt,
+        source: 'sale',
       }),
       createdAt
     );
@@ -399,6 +558,207 @@ export function adjustInventory(payload: {
     productId: payload.productId,
     stock: nextStock,
   };
+}
+
+export function listCustomers(limit = 20, offset = 0): CustomerRecord[] {
+  return getDatabase()
+    .prepare(
+      'SELECT id, name, phone, email, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive FROM customers WHERE isActive = 1 ORDER BY name LIMIT ? OFFSET ?'
+    )
+    .all(limit, offset) as CustomerRecord[];
+}
+
+export function findCustomers(query: string, limit = 10): CustomerRecord[] {
+  const db = getDatabase();
+  const q = query.trim();
+
+  if (!q) {
+    return db
+      .prepare(
+        'SELECT id, name, phone, email, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive FROM customers WHERE isActive = 1 ORDER BY lastVisitAt DESC, name LIMIT ?'
+      )
+      .all(limit) as CustomerRecord[];
+  }
+
+  const like = `%${q}%`;
+  return db
+    .prepare(
+      `SELECT id, name, phone, email, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive
+       FROM customers
+       WHERE isActive = 1
+         AND (name LIKE ? OR phone LIKE ? OR email LIKE ?)
+       ORDER BY name
+       LIMIT ?`
+    )
+    .all(like, like, like, limit) as CustomerRecord[];
+}
+
+export function createCustomer(payload: { name: string; phone?: string; email?: string }) {
+  const db = getDatabase();
+  const name = payload.name.trim();
+  const phone = payload.phone?.trim() || null;
+  const email = payload.email?.trim() || null;
+
+  if (!name) throw new Error('Customer name is required');
+
+  const id = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+
+  db.prepare(`
+    INSERT INTO customers (id, name, phone, email, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive)
+    VALUES (?, ?, ?, ?, 0, 0, NULL, ?, 1)
+  `).run(id, name, phone, email, createdAt);
+
+  db.prepare(`
+    INSERT INTO sync_queue (id, entityType, entityId, payload, status, createdAt)
+    VALUES (?, ?, ?, ?, 'pending', ?)
+  `).run(
+    crypto.randomUUID(),
+    'customer',
+    id,
+    JSON.stringify({
+      id,
+      name,
+      phone,
+      email,
+      loyaltyPoints: 0,
+      visitsCount: 0,
+      lastVisitAt: null,
+      createdAt,
+      isActive: 1,
+    }),
+    createdAt
+  );
+
+  return {
+    id,
+    name,
+    phone,
+    email,
+    loyaltyPoints: 0,
+    visitsCount: 0,
+    lastVisitAt: null,
+    createdAt,
+    isActive: 1,
+  } satisfies CustomerRecord;
+}
+
+export function createVisit(payload: {
+  customerId?: string | null;
+  customerName?: string;
+  serviceName: string;
+  amount: number;
+  notes?: string;
+}) {
+  const db = getDatabase();
+  const serviceName = payload.serviceName.trim();
+  if (!serviceName) throw new Error('Service name is required');
+  if (payload.amount < 0) throw new Error('Amount cannot be negative');
+
+  const customerId = payload.customerId?.trim() || null;
+  let customerName = payload.customerName?.trim() || 'Walk-in';
+  let pointsEarned = payload.amount > 0 ? Math.max(1, Math.floor(payload.amount / 100)) : 0;
+
+  if (customerId) {
+    const customer = db
+      .prepare('SELECT id, name, loyaltyPoints, visitsCount FROM customers WHERE id = ? AND isActive = 1')
+      .get(customerId) as { id: string; name: string; loyaltyPoints: number; visitsCount: number } | undefined;
+    if (!customer) throw new Error('Customer not found');
+    customerName = customer.name;
+  } else {
+    pointsEarned = 0;
+  }
+
+  const id = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+  const notes = payload.notes?.trim() || null;
+
+  const tx = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO visits (id, customerId, customerName, serviceName, amount, pointsEarned, notes, createdAt, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, customerId, customerName, serviceName, payload.amount, pointsEarned, notes, createdAt, 'manual');
+
+    if (customerId && pointsEarned > 0) {
+      db.prepare(`
+        UPDATE customers
+        SET loyaltyPoints = loyaltyPoints + ?,
+            visitsCount = visitsCount + 1,
+            lastVisitAt = ?
+        WHERE id = ?
+      `).run(pointsEarned, createdAt, customerId);
+    } else if (customerId) {
+      db.prepare(`
+        UPDATE customers
+        SET visitsCount = visitsCount + 1,
+            lastVisitAt = ?
+        WHERE id = ?
+      `).run(createdAt, customerId);
+    }
+
+    db.prepare(`
+      INSERT INTO sync_queue (id, entityType, entityId, payload, status, createdAt)
+      VALUES (?, ?, ?, ?, 'pending', ?)
+    `).run(
+      crypto.randomUUID(),
+      'visit',
+      id,
+      JSON.stringify({
+        id,
+        customerId,
+        customerName,
+        serviceName,
+        amount: payload.amount,
+        pointsEarned,
+        notes,
+        createdAt,
+        source: 'manual',
+      }),
+      createdAt
+    );
+
+    if (customerId) {
+      const customer = db
+        .prepare('SELECT id, name, phone, email, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive FROM customers WHERE id = ?')
+        .get(customerId) as CustomerRecord | undefined;
+      if (customer) {
+        db.prepare(`
+          INSERT INTO sync_queue (id, entityType, entityId, payload, status, createdAt)
+          VALUES (?, ?, ?, ?, 'pending', ?)
+        `).run(
+          crypto.randomUUID(),
+          'customer',
+          customerId,
+          JSON.stringify({
+            ...customer,
+          }),
+          createdAt
+        );
+      }
+    }
+  });
+
+  tx();
+
+  return {
+    id,
+    customerId,
+    customerName,
+    serviceName,
+    amount: payload.amount,
+    pointsEarned,
+    notes,
+    createdAt,
+    source: 'manual',
+  } satisfies VisitRecord;
+}
+
+export function getRecentVisits(limit = 8) {
+  return getDatabase()
+    .prepare(
+      'SELECT id, customerId, customerName, serviceName, amount, pointsEarned, notes, createdAt, source FROM visits ORDER BY createdAt DESC LIMIT ?'
+    )
+    .all(limit) as VisitRecord[];
 }
 
 export function deleteProduct(payload: { productId: string }) {
