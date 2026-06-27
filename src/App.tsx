@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import type { Product } from '../electron/schema';
+import type { Product, ServicePackage } from '../electron/schema';
 
 type CartLine = Product & { quantity: number };
 type InventoryRow = Product;
+type ServiceRow = ServicePackage;
 type CustomerRow = {
   id: string;
   name: string;
@@ -19,8 +20,12 @@ type VisitRow = {
   id: string;
   customerId: string | null;
   customerName: string;
+  serviceId: string | null;
+  serviceCode: string | null;
   serviceName: string;
+  servicePrice: number;
   amount: number;
+  priceOverride: number;
   pointsEarned: number;
   notes: string | null;
   createdAt: string;
@@ -35,8 +40,19 @@ type CustomerProfile = {
   customer: CustomerRow;
   recentVisits: VisitRow[];
   favoriteServices: CustomerServiceSummary[];
+  pointsEarnedTotal: number;
+  pointsRedeemedTotal: number;
+  loyaltyTransactions: Array<{
+    id: string;
+    customerId: string;
+    customerName: string;
+    transactionType: 'earn' | 'redeem';
+    points: number;
+    notes: string | null;
+    createdAt: string;
+  }>;
 };
-type ViewMode = 'dashboard' | 'customers' | 'pos' | 'inventory';
+type ViewMode = 'dashboard' | 'customers' | 'billing' | 'pos' | 'inventory' | 'services' | 'reports' | 'settings';
 type SaleResult = {
   id: string;
   receiptNo: string;
@@ -71,6 +87,90 @@ type DashboardSummary = {
   online: boolean;
   registerName: string;
 };
+type ReportSnapshot = {
+  revenue: {
+    saleCount: number;
+    totalRevenue: number;
+    totalTax: number;
+    totalDiscount: number;
+    averageSaleValue: number;
+    topPaymentMethod: string;
+    monthlyTrend: Array<{
+      month: string;
+      revenue: number;
+      saleCount: number;
+    }>;
+    recentSales: Array<{
+      id: string;
+      receiptNo: string;
+      cashierName: string;
+      subtotal: number;
+      taxTotal: number;
+      discountTotal: number;
+      grandTotal: number;
+      paymentMethod: string;
+      itemCount: number;
+      createdAt: string;
+    }>;
+  };
+  customers: {
+    totalCustomers: number;
+    activeCustomers: number;
+    newCustomersThisMonth: number;
+    averageVisitsPerCustomer: number;
+    topCustomers: Array<{
+      id: string;
+      name: string;
+      visitsCount: number;
+      loyaltyPoints: number;
+      totalSpent: number;
+      lastVisitAt: string | null;
+    }>;
+  };
+  visits: {
+    totalVisits: number;
+    visitsToday: number;
+    manualVisits: number;
+    saleVisits: number;
+    topServices: CustomerServiceSummary[];
+    recentVisits: VisitRow[];
+  };
+  loyalty: {
+    totalEarned: number;
+    totalRedeemed: number;
+    outstandingBalance: number;
+    topBalances: Array<{
+      id: string;
+      name: string;
+      earned: number;
+      redeemed: number;
+      balance: number;
+    }>;
+    recentTransactions: Array<{
+      id: string;
+      customerId: string;
+      customerName: string;
+      transactionType: 'earn' | 'redeem';
+      points: number;
+      notes: string | null;
+      createdAt: string;
+    }>;
+  };
+};
+type SettingsSnapshot = {
+  salonInfo: {
+    name: string;
+    phone: string;
+    email: string;
+    address: string;
+    tagline: string;
+  };
+  loyaltyRules: {
+    pointsPer100Currency: number;
+    redemptionValuePerPoint: number;
+    minimumRedeemPoints: number;
+  };
+};
 
 const money = new Intl.NumberFormat('en-PK', {
   style: 'currency',
@@ -81,9 +181,12 @@ const CASHIER_NAME = 'Amina Khan';
 
 function App() {
   const [products, setProducts] = useState<Product[]>([]);
+  const [services, setServices] = useState<ServiceRow[]>([]);
   const [inventory, setInventory] = useState<InventoryRow[]>([]);
   const [recentSales, setRecentSales] = useState<Array<any>>([]);
   const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
+  const [reports, setReports] = useState<ReportSnapshot | null>(null);
+  const [settings, setSettings] = useState<SettingsSnapshot | null>(null);
   const [syncStatus, setSyncStatus] = useState<{
     enabled: boolean;
     syncing: boolean;
@@ -109,6 +212,14 @@ function App() {
   });
   const [newItemStatus, setNewItemStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [newItemError, setNewItemError] = useState('');
+  const [newService, setNewService] = useState({
+    code: '',
+    name: '',
+    description: '',
+    price: '0.00',
+  });
+  const [newServiceStatus, setNewServiceStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [newServiceError, setNewServiceError] = useState('');
   const [showDeletedItems, setShowDeletedItems] = useState(false);
   const [newCustomer, setNewCustomer] = useState({
     name: '',
@@ -120,8 +231,10 @@ function App() {
   const [newCustomerError, setNewCustomerError] = useState('');
   const [newVisit, setNewVisit] = useState({
     customerId: 'walk-in',
+    serviceId: '',
     serviceName: '',
     amount: '0.00',
+    manualAmount: false,
     notes: '',
   });
   const [customerSearch, setCustomerSearch] = useState('');
@@ -143,23 +256,71 @@ function App() {
     email: '',
     notes: '',
   });
+  const [salonForm, setSalonForm] = useState({
+    name: '',
+    phone: '',
+    email: '',
+    address: '',
+    tagline: '',
+  });
+  const [loyaltyForm, setLoyaltyForm] = useState({
+    pointsPer100Currency: '1',
+    redemptionValuePerPoint: '1',
+    minimumRedeemPoints: '50',
+  });
+  const [settingsStatus, setSettingsStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [settingsError, setSettingsError] = useState('');
+  const [backupStatus, setBackupStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [backupMessage, setBackupMessage] = useState('');
+  const [restoreStatus, setRestoreStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [restoreMessage, setRestoreMessage] = useState('');
+  const [redeemPoints, setRedeemPoints] = useState('0');
+  const [redeemStatus, setRedeemStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [redeemError, setRedeemError] = useState('');
   const [customerFormMode, setCustomerFormMode] = useState<'create' | 'edit'>('create');
   const [customerFormStatus, setCustomerFormStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [customerFormError, setCustomerFormError] = useState('');
   const scanBuffer = useRef('');
   const scanTimer = useRef<number | null>(null);
+  const selectedService = useMemo(
+    () => services.find((service) => service.id === newVisit.serviceId) ?? null,
+    [newVisit.serviceId, services]
+  );
+
+  const refreshSettings = async () => {
+    const next = await window.pos.getSettings();
+    setSettings(next);
+    setSalonForm(next.salonInfo);
+    setLoyaltyForm({
+      pointsPer100Currency: String(next.loyaltyRules.pointsPer100Currency),
+      redemptionValuePerPoint: String(next.loyaltyRules.redemptionValuePerPoint),
+      minimumRedeemPoints: String(next.loyaltyRules.minimumRedeemPoints),
+    });
+  };
 
   useEffect(() => {
     const load = async () => {
-      const [dash, list, sales, sync, stock] = await Promise.all([
+      const [dash, reportData, settingsData, list, serviceList, sales, sync, stock] = await Promise.all([
         window.pos.getDashboard(),
+        window.pos.getReports(),
+        window.pos.getSettings(),
         window.pos.listProducts(),
+        window.pos.listServices(),
         window.pos.getRecentSales(),
         window.pos.getSyncStatus(),
         window.pos.listInventory(),
       ]);
       setDashboard(dash);
+      setReports(reportData);
+      setSettings(settingsData);
+      setSalonForm(settingsData.salonInfo);
+      setLoyaltyForm({
+        pointsPer100Currency: String(settingsData.loyaltyRules.pointsPer100Currency),
+        redemptionValuePerPoint: String(settingsData.loyaltyRules.redemptionValuePerPoint),
+        minimumRedeemPoints: String(settingsData.loyaltyRules.minimumRedeemPoints),
+      });
       setProducts(list);
+      setServices(serviceList);
       setRecentSales(sales);
       setSyncStatus(sync);
       setInventory(stock);
@@ -175,7 +336,7 @@ function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (view !== 'pos') return;
+      if (view !== 'pos' && view !== 'billing') return;
       if (event.key === 'Enter') {
         const code = scanBuffer.current.trim();
         scanBuffer.current = '';
@@ -264,7 +425,7 @@ function App() {
 
     window.pos
       .getCustomerProfile({ customerId: selectedCustomerId })
-      .then((profile) => {
+              .then((profile) => {
         if (!active) return;
         setCustomerProfile(profile);
         setCustomerForm({
@@ -276,6 +437,9 @@ function App() {
         setCustomerFormMode('edit');
         setCustomerFormError('');
         setCustomerFormStatus('idle');
+        setRedeemPoints('0');
+        setRedeemStatus('idle');
+        setRedeemError('');
       })
       .catch((error) => {
         if (!active) return;
@@ -357,15 +521,27 @@ function App() {
   };
 
   const refreshData = async () => {
-    const [dash, list, sales, sync, stock] = await Promise.all([
+    const [dash, reportData, settingsData, list, serviceList, sales, sync, stock] = await Promise.all([
       window.pos.getDashboard(),
+      window.pos.getReports(),
+      window.pos.getSettings(),
       window.pos.listProducts(),
+      window.pos.listServices(),
       window.pos.getRecentSales(),
       window.pos.getSyncStatus(),
       window.pos.listInventory(),
     ]);
     setDashboard(dash);
+    setReports(reportData);
+    setSettings(settingsData);
+    setSalonForm(settingsData.salonInfo);
+    setLoyaltyForm({
+      pointsPer100Currency: String(settingsData.loyaltyRules.pointsPer100Currency),
+      redemptionValuePerPoint: String(settingsData.loyaltyRules.redemptionValuePerPoint),
+      minimumRedeemPoints: String(settingsData.loyaltyRules.minimumRedeemPoints),
+    });
     setProducts(list);
+    setServices(serviceList);
     setRecentSales(sales);
     setSyncStatus(sync);
     setInventory(stock);
@@ -382,7 +558,7 @@ function App() {
     setStatus('saved');
     await window.pos.printReceipt(result);
     await refreshData();
-    alert(`Sale saved locally as ${result.receiptNo}`);
+    alert(`Invoice saved locally as ${result.receiptNo}`);
   };
 
   const adjustStock = async (productId: string, delta: number) => {
@@ -444,6 +620,132 @@ function App() {
     }
   };
 
+  const createNewService = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setNewServiceStatus('saving');
+    setNewServiceError('');
+
+    try {
+      await window.pos.createService({
+        code: newService.code,
+        name: newService.name,
+        description: newService.description,
+        price: Number(newService.price),
+      });
+      setNewService({
+        code: '',
+        name: '',
+        description: '',
+        price: '0.00',
+      });
+      setNewServiceStatus('saved');
+      await refreshData();
+    } catch (error) {
+      setNewServiceStatus('error');
+      setNewServiceError(error instanceof Error ? error.message : 'Could not create service');
+    }
+  };
+
+  const saveSalonSettings = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSettingsStatus('saving');
+    setSettingsError('');
+
+    try {
+      const next = await window.pos.updateSalonInfo(salonForm);
+      setSalonForm(next);
+      setSettings((current) =>
+        current
+          ? {
+              ...current,
+              salonInfo: next,
+            }
+          : current
+      );
+      setSettingsStatus('saved');
+    } catch (error) {
+      setSettingsStatus('error');
+      setSettingsError(error instanceof Error ? error.message : 'Could not save salon information');
+    }
+  };
+
+  const saveLoyaltySettings = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSettingsStatus('saving');
+    setSettingsError('');
+
+    try {
+      const next = await window.pos.updateLoyaltyRules({
+        pointsPer100Currency: Number(loyaltyForm.pointsPer100Currency),
+        redemptionValuePerPoint: Number(loyaltyForm.redemptionValuePerPoint),
+        minimumRedeemPoints: Number(loyaltyForm.minimumRedeemPoints),
+      });
+      setLoyaltyForm({
+        pointsPer100Currency: String(next.pointsPer100Currency),
+        redemptionValuePerPoint: String(next.redemptionValuePerPoint),
+        minimumRedeemPoints: String(next.minimumRedeemPoints),
+      });
+      setSettings((current) =>
+        current
+          ? {
+              ...current,
+              loyaltyRules: next,
+            }
+          : current
+      );
+      setSettingsStatus('saved');
+    } catch (error) {
+      setSettingsStatus('error');
+      setSettingsError(error instanceof Error ? error.message : 'Could not save loyalty rules');
+    }
+  };
+
+  const backupDatabase = async () => {
+    setBackupStatus('saving');
+    setBackupMessage('');
+
+    try {
+      const result = await window.pos.backupDatabase();
+      setBackupStatus('saved');
+      setBackupMessage(result.saved && result.path ? `Backup saved to ${result.path}` : 'Backup was canceled.');
+    } catch (error) {
+      setBackupStatus('error');
+      setBackupMessage(error instanceof Error ? error.message : 'Could not back up the database');
+    }
+  };
+
+  const restoreDatabase = async () => {
+    const confirmed = window.confirm(
+      'Restore database from a backup file? This will replace the current local database.'
+    );
+    if (!confirmed) return;
+
+    setRestoreStatus('saving');
+    setRestoreMessage('');
+
+    try {
+      const result = await window.pos.restoreDatabase();
+      if (!result.restored) {
+        setRestoreStatus('saved');
+        setRestoreMessage('Restore was canceled.');
+        return;
+      }
+
+      setRestoreStatus('saved');
+      setRestoreMessage(`Restored from ${result.restoredFrom ?? 'backup file'}`);
+      setSelectedCustomerId('');
+      setCustomerProfile(null);
+      setCustomerFormStatus('idle');
+      setCustomerFormError('');
+      setCustomerDirectoryRefreshToken((current) => current + 1);
+      setView('dashboard');
+      await refreshData();
+    } catch (error) {
+      setRestoreStatus('error');
+      setRestoreMessage(error instanceof Error ? error.message : 'Could not restore the database');
+    }
+  };
+
   const createNewCustomer = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setNewCustomerStatus('saving');
@@ -473,18 +775,25 @@ function App() {
     try {
       const selectedCustomerId = newVisit.customerId === 'walk-in' ? null : newVisit.customerId;
       const selectedCustomer = selectedCustomerId ? selectedVisitCustomer : null;
+      if (!selectedService) {
+        throw new Error('Please select a service package');
+      }
+      const amount = newVisit.manualAmount ? Number(newVisit.amount) : selectedService.price;
 
       await window.pos.createVisit({
         customerId: selectedCustomerId,
         customerName: selectedCustomer?.name,
-        serviceName: newVisit.serviceName,
-        amount: Number(newVisit.amount),
+        serviceId: selectedService.id,
+        serviceName: selectedService.name,
+        amount,
         notes: newVisit.notes || undefined,
       });
       setNewVisit({
         customerId: 'walk-in',
+        serviceId: '',
         serviceName: '',
         amount: '0.00',
+        manualAmount: false,
         notes: '',
       });
       setCustomerSearch('');
@@ -510,6 +819,9 @@ function App() {
     setCustomerProfile(null);
     setCustomerFormError('');
     setCustomerFormStatus('idle');
+    setRedeemPoints('0');
+    setRedeemStatus('idle');
+    setRedeemError('');
   };
 
   const saveCustomer = async (event: FormEvent<HTMLFormElement>) => {
@@ -553,6 +865,51 @@ function App() {
     }
   };
 
+  const redeemCustomerPoints = async () => {
+    if (!selectedCustomerId || !customerProfile) return;
+
+    setRedeemStatus('saving');
+    setRedeemError('');
+
+    try {
+      const result = await window.pos.redeemCustomerPoints({
+        customerId: selectedCustomerId,
+        points: Number(redeemPoints),
+        notes: `Redeemed from ${customerProfile.customer.name}`,
+      });
+      setRedeemPoints('0');
+      setRedeemStatus('saved');
+      setCustomerProfile((current) =>
+        current
+          ? {
+              ...current,
+              customer: {
+                ...current.customer,
+                loyaltyPoints: result.loyaltyPoints,
+              },
+              pointsRedeemedTotal: current.pointsRedeemedTotal + result.pointsRedeemed,
+              loyaltyTransactions: [
+                {
+                  id: `redeem-${Date.now()}`,
+                  customerId: selectedCustomerId,
+                  customerName: customerProfile.customer.name,
+                  transactionType: 'redeem',
+                  points: result.pointsRedeemed,
+                  notes: `Redeemed from ${customerProfile.customer.name}`,
+                  createdAt: result.createdAt,
+                },
+                ...current.loyaltyTransactions,
+              ],
+            }
+          : current
+      );
+      await refreshData();
+    } catch (error) {
+      setRedeemStatus('error');
+      setRedeemError(error instanceof Error ? error.message : 'Could not redeem points');
+    }
+  };
+
   const removeCustomer = async () => {
     if (!selectedCustomerId || !customerProfile) return;
     const confirmed = window.confirm(`Delete ${customerProfile.customer.name}? This hides the customer from the active list.`);
@@ -579,8 +936,8 @@ function App() {
         <div className="brand">
           <div className="brand-mark">OP</div>
           <div>
-            <p className="eyebrow">Offline POS</p>
-            <h1>Front Counter</h1>
+            <p className="eyebrow">{settings?.salonInfo.name ?? 'Offline POS'}</p>
+            <h1>{settings?.salonInfo.tagline ?? 'Front Counter'}</h1>
           </div>
         </div>
 
@@ -636,7 +993,7 @@ function App() {
         </div>
 
         <div className="panel">
-          <h2>Recent Visits</h2>
+          <h2>Recent transactions</h2>
           <div className="list">
             {dashboard?.recentVisits.slice(0, 5).map((visit) => (
               <div className="list-item" key={visit.id}>
@@ -657,13 +1014,35 @@ function App() {
       <main className="main">
         <header className="topbar">
           <div>
-            <p className="eyebrow">{view === 'dashboard' ? 'Front desk' : view === 'customers' ? 'Reception' : 'Cashier station'}</p>
+            <p className="eyebrow">
+              {view === 'dashboard'
+                ? 'Front desk'
+                : view === 'customers'
+                  ? 'Reception'
+                  : view === 'reports'
+                    ? 'Reporting'
+                    : view === 'billing' || view === 'pos'
+                      ? 'Billing desk'
+                  : view === 'services'
+                    ? 'Treatment catalog'
+                  : view === 'settings'
+                    ? 'Administration'
+                  : 'Cashier station'}
+            </p>
             <h2>
               {view === 'dashboard'
                 ? 'Parlor dashboard for customers, visits, and loyalty.'
                 : view === 'customers'
                   ? 'Manage customer profiles, history, and favorite services.'
-                : 'Fast checkout, built to feel calm and premium.'}
+                  : view === 'reports'
+                    ? 'Review revenue, visit, customer, and loyalty performance.'
+                  : view === 'billing' || view === 'pos'
+                    ? 'Generate invoices, save transactions, and print receipts.'
+                  : view === 'services'
+                    ? 'Create treatment packages with codes, descriptions, and pricing.'
+                  : view === 'settings'
+                    ? 'Configure the salon profile, loyalty rules, and database maintenance.'
+                  : 'Fast checkout, built to feel calm and premium.'}
             </h2>
           </div>
           <div className="toolbar">
@@ -673,14 +1052,35 @@ function App() {
             <button className={`ghost-button ${view === 'customers' ? 'ghost-active' : ''}`} onClick={() => setView('customers')}>
               Customers
             </button>
-            <button className={`ghost-button ${view === 'pos' ? 'ghost-active' : ''}`} onClick={() => setView('pos')}>
-              POS
+            <button
+              className={`ghost-button ${view === 'billing' || view === 'pos' ? 'ghost-active' : ''}`}
+              onClick={() => setView('billing')}
+            >
+              Billing
+            </button>
+            <button
+              className={`ghost-button ${view === 'services' ? 'ghost-active' : ''}`}
+              onClick={() => setView('services')}
+            >
+              Services
+            </button>
+            <button
+              className={`ghost-button ${view === 'reports' ? 'ghost-active' : ''}`}
+              onClick={() => setView('reports')}
+            >
+              Reports
             </button>
             <button
               className={`ghost-button ${view === 'inventory' ? 'ghost-active' : ''}`}
               onClick={() => setView('inventory')}
             >
-              Services
+              Inventory
+            </button>
+            <button
+              className={`ghost-button ${view === 'settings' ? 'ghost-active' : ''}`}
+              onClick={() => setView('settings')}
+            >
+              Settings
             </button>
           </div>
         </header>
@@ -696,11 +1096,14 @@ function App() {
                 </p>
               </div>
               <div className="dashboard-hero-actions">
-                <button className="ghost-button" onClick={() => setView('pos')}>
-                  New Sale
+                <button className="ghost-button" onClick={() => setView('billing')}>
+                  New Bill
                 </button>
-                <button className="ghost-button" onClick={() => setView('inventory')}>
+                <button className="ghost-button" onClick={() => setView('services')}>
                   Services
+                </button>
+                <button className="ghost-button" onClick={() => setView('reports')}>
+                  Reports
                 </button>
               </div>
             </div>
@@ -853,6 +1256,70 @@ function App() {
                           <span className="muted">No matching customers found.</span>
                         ) : null}
                       </div>
+                      <label className="full-width">
+                        <span>Service / package</span>
+                        <select
+                          className="field"
+                          value={newVisit.serviceId}
+                          onChange={(event) => {
+                            const service = services.find((item) => item.id === event.target.value) ?? null;
+                            setNewVisit((current) => ({
+                              ...current,
+                              serviceId: service?.id ?? '',
+                              serviceName: service?.name ?? '',
+                              amount: service ? service.price.toFixed(2) : current.amount,
+                              manualAmount: false,
+                            }));
+                          }}
+                          required
+                        >
+                          <option value="" disabled>
+                            Select a service package
+                          </option>
+                          {services.map((service) => (
+                            <option key={service.id} value={service.id}>
+                              {service.code} · {service.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {selectedService ? (
+                        <div className="customer-results full-width">
+                          <div className="customer-result customer-result-selected">
+                            <div>
+                              <strong>{selectedService.name}</strong>
+                              <span>
+                                {selectedService.code} · {selectedService.description}
+                              </span>
+                            </div>
+                            <div className="right">
+                              <strong>{money.format(selectedService.price)}</strong>
+                              <span>default price</span>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="muted">Choose a service package to auto-calculate the amount.</span>
+                      )}
+                      <label className="checkbox-row full-width">
+                        <input
+                          type="checkbox"
+                          checked={newVisit.manualAmount}
+                          onChange={(event) =>
+                            setNewVisit((current) => ({
+                              ...current,
+                              manualAmount: event.target.checked,
+                              amount: event.target.checked
+                                ? current.amount
+                                : selectedService
+                                  ? selectedService.price.toFixed(2)
+                                  : current.amount,
+                            }))
+                          }
+                          disabled={!selectedService}
+                        />
+                        <span>Manual price override</span>
+                      </label>
                       <label>
                         <span>Amount</span>
                         <input
@@ -861,21 +1328,12 @@ function App() {
                           min="0"
                           step="0.01"
                           placeholder="1500"
-                          value={newVisit.amount}
-                          onChange={(event) => setNewVisit((current) => ({ ...current, amount: event.target.value }))}
-                          required
-                        />
-                      </label>
-                      <label className="full-width">
-                        <span>Service</span>
-                        <input
-                          className="field"
-                          placeholder="Hair color / Facial / Manicure"
-                          value={newVisit.serviceName}
+                          value={newVisit.manualAmount && selectedService ? newVisit.amount : selectedService?.price.toFixed(2) ?? newVisit.amount}
                           onChange={(event) =>
-                            setNewVisit((current) => ({ ...current, serviceName: event.target.value }))
+                            setNewVisit((current) => ({ ...current, amount: event.target.value, manualAmount: true }))
                           }
                           required
+                          readOnly={Boolean(selectedService) && !newVisit.manualAmount}
                         />
                       </label>
                       <label className="full-width">
@@ -910,7 +1368,7 @@ function App() {
                 <div className="dashboard-panel-head">
                   <div>
                     <p className="eyebrow">Recent visits</p>
-                    <h2>Today and latest</h2>
+                    <h2>Transaction history</h2>
                   </div>
                   <span className="pill pill-online">{dashboard?.recentVisits.length ?? 0} logged</span>
                 </div>
@@ -920,7 +1378,9 @@ function App() {
                       <div>
                         <strong>{visit.customerName}</strong>
                         <span>
+                          {visit.serviceCode ? `${visit.serviceCode} · ` : ''}
                           {visit.serviceName}
+                          {visit.priceOverride ? ' · manual price' : ''}
                           {visit.notes ? ` · ${visit.notes}` : ''}
                         </span>
                       </div>
@@ -1043,10 +1503,20 @@ function App() {
                     <div className="metric-card">
                       <span>Visits</span>
                       <strong>{customerProfile?.customer.visitsCount ?? '...'}</strong>
-                      <small>Total salon visits</small>
+                      <small>Total visits</small>
                     </div>
                     <div className="metric-card">
-                      <span>Loyalty points</span>
+                      <span>Points earned</span>
+                      <strong>{customerProfile?.pointsEarnedTotal ?? '...'}</strong>
+                      <small>From completed visits</small>
+                    </div>
+                    <div className="metric-card">
+                      <span>Points redeemed</span>
+                      <strong>{customerProfile?.pointsRedeemedTotal ?? '...'}</strong>
+                      <small>Loyalty used</small>
+                    </div>
+                    <div className="metric-card">
+                      <span>Loyalty balance</span>
                       <strong>{customerProfile?.customer.loyaltyPoints ?? '...'}</strong>
                       <small>Available points</small>
                     </div>
@@ -1058,6 +1528,46 @@ function App() {
                           : '—'}
                       </strong>
                       <small>Most recent session</small>
+                    </div>
+                  </div>
+
+                  <div className="new-item-form">
+                    <div className="form-head">
+                      <div>
+                        <p className="eyebrow">Redeem loyalty</p>
+                        <h3>Use customer points</h3>
+                      </div>
+                      <span className={`pill ${redeemStatus === 'saved' ? 'pill-online' : 'pill-offline'}`}>
+                        {redeemStatus === 'saved' ? 'Saved' : 'Local only'}
+                      </span>
+                    </div>
+                    <div className="form-grid">
+                      <label>
+                        <span>Points to redeem</span>
+                        <input
+                          className="field"
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={redeemPoints}
+                          onChange={(event) => setRedeemPoints(event.target.value)}
+                          required
+                        />
+                      </label>
+                    </div>
+                    <div className="form-footer">
+                      <button className="primary-button" type="button" onClick={() => void redeemCustomerPoints()} disabled={redeemStatus === 'saving'}>
+                        {redeemStatus === 'saving' ? 'Saving...' : 'Redeem points'}
+                      </button>
+                      <div className="form-message">
+                        {redeemError ? (
+                          <span className="error-text">{redeemError}</span>
+                        ) : redeemStatus === 'saved' ? (
+                          <span className="success-text">Points redeemed.</span>
+                        ) : (
+                          <span className="muted">Subtracts from the customer balance and logs the transaction.</span>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -1087,7 +1597,7 @@ function App() {
                   <section className="customer-profile-card">
                     <div className="inventory-section-head">
                       <div>
-                        <h3>Favorite services</h3>
+                        <h3>Services taken</h3>
                         <span className="muted">Most requested treatments</span>
                       </div>
                     </div>
@@ -1114,7 +1624,7 @@ function App() {
                   <section className="customer-profile-card">
                     <div className="inventory-section-head">
                       <div>
-                        <h3>Visit history</h3>
+                        <h3>Transaction history</h3>
                         <span className="muted">Latest salon visits</span>
                       </div>
                     </div>
@@ -1124,7 +1634,11 @@ function App() {
                           <div className="customer-history-item" key={visit.id}>
                             <div>
                               <strong>{visit.serviceName}</strong>
-                              <span>{visit.notes || 'No notes'}</span>
+                              <span>
+                                {visit.serviceCode ? `${visit.serviceCode} · ` : ''}
+                                {visit.priceOverride ? 'manual price · ' : ''}
+                                {visit.notes || 'No notes'}
+                              </span>
                             </div>
                             <div className="right">
                               <strong>{money.format(visit.amount)}</strong>
@@ -1136,6 +1650,33 @@ function App() {
                         ))
                       ) : (
                         <span className="muted">No visits recorded for this customer.</span>
+                      )}
+                    </div>
+                  </section>
+
+                  <section className="customer-profile-card">
+                    <div className="inventory-section-head">
+                      <div>
+                        <h3>Loyalty activity</h3>
+                        <span className="muted">Points earned and redeemed</span>
+                      </div>
+                    </div>
+                    <div className="customer-history-list">
+                      {(customerProfile?.loyaltyTransactions ?? []).length > 0 ? (
+                        customerProfile!.loyaltyTransactions.map((entry) => (
+                          <div className="customer-history-item" key={entry.id}>
+                            <div>
+                              <strong>{entry.transactionType === 'earn' ? 'Points earned' : 'Points redeemed'}</strong>
+                              <span>{entry.notes || 'No notes'}</span>
+                            </div>
+                            <div className="right">
+                              <strong>{entry.transactionType === 'earn' ? '+' : '-'}{entry.points}</strong>
+                              <span>{new Date(entry.createdAt).toLocaleDateString()}</span>
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <span className="muted">No loyalty transactions yet.</span>
                       )}
                     </div>
                   </section>
@@ -1152,14 +1693,14 @@ function App() {
               </section>
             </div>
           </section>
-        ) : view === 'pos' ? (
+        ) : view === 'billing' || view === 'pos' ? (
           <section className="workspace">
           <div className="catalog">
             <div className="search-wrap">
                 <input
                   autoFocus
                   className="search"
-                  placeholder="Search service, code, or category"
+                  placeholder="Search item, code, or category"
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                 />
@@ -1260,9 +1801,560 @@ function App() {
             </div>
 
             <button className="primary-button" onClick={submitSale} disabled={cart.length === 0}>
-              Complete sale
+              Generate invoice
             </button>
+
+            <div className="inventory-section inventory-section-muted">
+              <div className="inventory-section-head">
+                <div>
+                  <h3>Saved bills</h3>
+                  <span className="muted">Latest transaction records</span>
+                </div>
+                <span className="muted">{recentSales.length} stored</span>
+              </div>
+              <div className="customer-history-list">
+                {recentSales.slice(0, 6).map((sale) => (
+                  <div className="customer-history-item" key={sale.id}>
+                    <div>
+                      <strong>{sale.receiptNo}</strong>
+                      <span>
+                        {sale.itemCount} items · {sale.paymentMethod} ·{' '}
+                        {new Date(sale.createdAt).toLocaleDateString()}
+                      </span>
+                    </div>
+                    <div className="right">
+                      <strong>{money.format(sale.grandTotal)}</strong>
+                      <span>{sale.cashierName}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           </aside>
+          </section>
+        ) : view === 'reports' ? (
+          <section className="reports-view">
+            <div className="dashboard-metrics">
+              <div className="metric-card">
+                <span>Revenue</span>
+                <strong>{reports ? money.format(reports.revenue.totalRevenue) : '...'}</strong>
+                <small>{reports?.revenue.saleCount ?? 0} invoices</small>
+              </div>
+              <div className="metric-card">
+                <span>Customers</span>
+                <strong>{reports?.customers.totalCustomers ?? '...'}</strong>
+                <small>{reports?.customers.activeCustomers ?? 0} active</small>
+              </div>
+              <div className="metric-card">
+                <span>Visits</span>
+                <strong>{reports?.visits.totalVisits ?? '...'}</strong>
+                <small>{reports?.visits.visitsToday ?? 0} today</small>
+              </div>
+              <div className="metric-card">
+                <span>Loyalty balance</span>
+                <strong>{reports?.loyalty.outstandingBalance ?? '...'}</strong>
+                <small>{reports?.loyalty.totalRedeemed ?? 0} redeemed</small>
+              </div>
+            </div>
+
+            <div className="dashboard-grid">
+              <section className="panel dashboard-panel">
+                <div className="dashboard-panel-head">
+                  <div>
+                    <p className="eyebrow">Revenue reports</p>
+                    <h2>Sales and billing performance</h2>
+                  </div>
+                  <span className="pill pill-online">{reports?.revenue.topPaymentMethod ?? 'Cash'}</span>
+                </div>
+                <div className="list">
+                  <div className="list-item">
+                    <div>
+                      <strong>Total revenue</strong>
+                      <span>Gross billed amount</span>
+                    </div>
+                    <div className="right">
+                      <strong>{reports ? money.format(reports.revenue.totalRevenue) : '...'}</strong>
+                      <span>{reports?.revenue.saleCount ?? 0} sales</span>
+                    </div>
+                  </div>
+                  <div className="list-item">
+                    <div>
+                      <strong>Total tax</strong>
+                      <span>Collected tax</span>
+                    </div>
+                    <div className="right">
+                      <strong>{reports ? money.format(reports.revenue.totalTax) : '...'}</strong>
+                      <span>Across bills</span>
+                    </div>
+                  </div>
+                  <div className="list-item">
+                    <div>
+                      <strong>Total discounts</strong>
+                      <span>Applied reductions</span>
+                    </div>
+                    <div className="right">
+                      <strong>{reports ? money.format(reports.revenue.totalDiscount) : '...'}</strong>
+                      <span>Across bills</span>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="panel dashboard-panel">
+                <div className="dashboard-panel-head">
+                  <div>
+                    <p className="eyebrow">Customer reports</p>
+                    <h2>Customer activity</h2>
+                  </div>
+                </div>
+                <div className="list">
+                  <div className="list-item">
+                    <div>
+                      <strong>New this month</strong>
+                      <span>Fresh profiles created</span>
+                    </div>
+                    <div className="right">
+                      <strong>{reports?.customers.newCustomersThisMonth ?? 0}</strong>
+                      <span>customers</span>
+                    </div>
+                  </div>
+                  {reports?.customers.topCustomers.slice(0, 5).map((customer) => (
+                    <div className="list-item" key={customer.id}>
+                      <div>
+                        <strong>{customer.name}</strong>
+                        <span>
+                          {customer.visitsCount} visits · {customer.loyaltyPoints} points
+                        </span>
+                      </div>
+                      <div className="right">
+                        <strong>{money.format(customer.totalSpent)}</strong>
+                        <span>{customer.lastVisitAt ? new Date(customer.lastVisitAt).toLocaleDateString() : 'No visit'}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </div>
+
+            <div className="dashboard-grid">
+              <section className="panel dashboard-panel">
+                <div className="dashboard-panel-head">
+                  <div>
+                    <p className="eyebrow">Visit reports</p>
+                    <h2>Services and attendance</h2>
+                  </div>
+                </div>
+                <div className="list">
+                  <div className="list-item">
+                    <div>
+                      <strong>Total visits</strong>
+                      <span>All recorded sessions</span>
+                    </div>
+                    <div className="right">
+                      <strong>{reports?.visits.totalVisits ?? '...'}</strong>
+                      <span>{reports?.visits.saleVisits ?? 0} from sales</span>
+                    </div>
+                  </div>
+                  {reports?.visits.topServices.slice(0, 5).map((service) => (
+                    <div className="list-item" key={service.serviceName}>
+                      <div>
+                        <strong>{service.serviceName}</strong>
+                        <span>{service.visitCount} visits</span>
+                      </div>
+                      <div className="right">
+                        <strong>{money.format(service.totalAmount)}</strong>
+                        <span>collected</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section className="panel dashboard-panel">
+                <div className="dashboard-panel-head">
+                  <div>
+                    <p className="eyebrow">Loyalty reports</p>
+                    <h2>Points movement</h2>
+                  </div>
+                </div>
+                <div className="list">
+                  <div className="list-item">
+                    <div>
+                      <strong>Points earned</strong>
+                      <span>From completed visits</span>
+                    </div>
+                    <div className="right">
+                      <strong>{reports?.loyalty.totalEarned ?? 0}</strong>
+                      <span>earned</span>
+                    </div>
+                  </div>
+                  <div className="list-item">
+                    <div>
+                      <strong>Points redeemed</strong>
+                      <span>Used by customers</span>
+                    </div>
+                    <div className="right">
+                      <strong>{reports?.loyalty.totalRedeemed ?? 0}</strong>
+                      <span>redeemed</span>
+                    </div>
+                  </div>
+                  {reports?.loyalty.topBalances.slice(0, 5).map((customer) => (
+                    <div className="list-item" key={customer.id}>
+                      <div>
+                        <strong>{customer.name}</strong>
+                        <span>
+                          {customer.earned} earned · {customer.redeemed} redeemed
+                        </span>
+                      </div>
+                      <div className="right">
+                        <strong>{customer.balance}</strong>
+                        <span>balance</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </div>
+          </section>
+        ) : view === 'services' ? (
+          <section className="inventory-view">
+            <div className="panel">
+              <div className="inventory-head">
+                <div>
+                  <p className="eyebrow">Treatment catalog</p>
+                  <h2>Service / package management</h2>
+                </div>
+                <span className="pill pill-offline">{services.length} active services</span>
+              </div>
+
+              <form className="new-item-form" onSubmit={createNewService}>
+                <div className="form-head">
+                  <div>
+                    <p className="eyebrow">Add service</p>
+                    <h3>New package</h3>
+                  </div>
+                  <span className={`pill ${newServiceStatus === 'saved' ? 'pill-online' : 'pill-offline'}`}>
+                    {newServiceStatus === 'saved' ? 'Saved' : 'Local only'}
+                  </span>
+                </div>
+
+                <div className="form-grid">
+                  <label>
+                    <span>Code</span>
+                    <input
+                      className="field"
+                      value={newService.code}
+                      onChange={(event) => setNewService((current) => ({ ...current, code: event.target.value }))}
+                      placeholder="FAC-1001"
+                      required
+                    />
+                  </label>
+                  <label>
+                    <span>Name</span>
+                    <input
+                      className="field"
+                      value={newService.name}
+                      onChange={(event) => setNewService((current) => ({ ...current, name: event.target.value }))}
+                      placeholder="Deep Cleansing Facial"
+                      required
+                    />
+                  </label>
+                  <label className="full-width">
+                    <span>Description</span>
+                    <input
+                      className="field"
+                      value={newService.description}
+                      onChange={(event) =>
+                        setNewService((current) => ({ ...current, description: event.target.value }))
+                      }
+                      placeholder="Hydrating facial treatment with a full cleanse and mask"
+                      required
+                    />
+                  </label>
+                  <label>
+                    <span>Price</span>
+                    <input
+                      className="field"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={newService.price}
+                      onChange={(event) => setNewService((current) => ({ ...current, price: event.target.value }))}
+                      required
+                    />
+                  </label>
+                </div>
+
+                <div className="form-footer">
+                  <button className="primary-button" type="submit" disabled={newServiceStatus === 'saving'}>
+                    {newServiceStatus === 'saving' ? 'Saving...' : 'Add service'}
+                  </button>
+                  <div className="form-message">
+                    {newServiceError ? (
+                      <span className="error-text">{newServiceError}</span>
+                    ) : newServiceStatus === 'saved' ? (
+                      <span className="success-text">Service added to the catalog.</span>
+                    ) : (
+                      <span className="muted">These services can be selected from the visit form.</span>
+                    )}
+                  </div>
+                </div>
+              </form>
+
+              <div className="inventory-section">
+                <div className="inventory-section-head">
+                  <h3>Active services</h3>
+                  <span className="muted">{services.length} showing</span>
+                </div>
+                <div className="inventory-table-wrap">
+                  <table className="inventory-table">
+                    <colgroup>
+                      <col className="inventory-col-service" />
+                      <col className="inventory-col-stock" />
+                      <col className="inventory-col-price" />
+                      <col className="inventory-col-actions" />
+                    </colgroup>
+                    <thead>
+                      <tr>
+                        <th>Service</th>
+                        <th>Code</th>
+                        <th>Price</th>
+                        <th>Description</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {services.map((service) => (
+                        <tr key={service.id}>
+                          <td>
+                            <div className="inventory-name-cell">
+                              <strong>{service.name}</strong>
+                              <span>Package treatment</span>
+                            </div>
+                          </td>
+                          <td className="inventory-cell-number">
+                            <strong>{service.code}</strong>
+                          </td>
+                          <td className="inventory-cell-number">{money.format(service.price)}</td>
+                          <td>
+                            <span className="muted">{service.description}</span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </section>
+        ) : view === 'settings' ? (
+          <section className="dashboard-view">
+            <div className="dashboard-hero">
+              <div>
+                <p className="eyebrow">Settings</p>
+                <h3>Keep the salon profile and loyalty rules in sync.</h3>
+                <p className="muted">
+                  Update the business details shown on receipts, tune point earning and redemption, and maintain local backups.
+                </p>
+              </div>
+              <div className="dashboard-hero-actions">
+                <button className="ghost-button" onClick={() => void backupDatabase()} disabled={backupStatus === 'saving'}>
+                  {backupStatus === 'saving' ? 'Backing up...' : 'Backup database'}
+                </button>
+                <button className="ghost-button" onClick={() => void restoreDatabase()} disabled={restoreStatus === 'saving'}>
+                  {restoreStatus === 'saving' ? 'Restoring...' : 'Restore database'}
+                </button>
+              </div>
+            </div>
+
+            <div className="dashboard-grid">
+              <section className="panel dashboard-panel">
+                <div className="dashboard-panel-head">
+                  <div>
+                    <p className="eyebrow">Salon information</p>
+                    <h2>Receipt and brand details</h2>
+                  </div>
+                  <span className={`pill ${settingsStatus === 'saved' ? 'pill-online' : 'pill-offline'}`}>
+                    {settingsStatus === 'saved' ? 'Saved' : 'Local only'}
+                  </span>
+                </div>
+
+                <form className="new-item-form" onSubmit={saveSalonSettings}>
+                  <div className="form-grid">
+                    <label>
+                      <span>Salon name</span>
+                      <input
+                        className="field"
+                        value={salonForm.name}
+                        onChange={(event) => setSalonForm((current) => ({ ...current, name: event.target.value }))}
+                        placeholder="Luxe Salon"
+                        required
+                      />
+                    </label>
+                    <label>
+                      <span>Tagline</span>
+                      <input
+                        className="field"
+                        value={salonForm.tagline}
+                        onChange={(event) => setSalonForm((current) => ({ ...current, tagline: event.target.value }))}
+                        placeholder="Front Counter"
+                        required
+                      />
+                    </label>
+                    <label>
+                      <span>Phone</span>
+                      <input
+                        className="field"
+                        value={salonForm.phone}
+                        onChange={(event) => setSalonForm((current) => ({ ...current, phone: event.target.value }))}
+                        placeholder="0300-1234567"
+                        required
+                      />
+                    </label>
+                    <label>
+                      <span>Email</span>
+                      <input
+                        className="field"
+                        value={salonForm.email}
+                        onChange={(event) => setSalonForm((current) => ({ ...current, email: event.target.value }))}
+                        placeholder="hello@salon.com"
+                      />
+                    </label>
+                    <label className="full-width">
+                      <span>Address</span>
+                      <input
+                        className="field"
+                        value={salonForm.address}
+                        onChange={(event) => setSalonForm((current) => ({ ...current, address: event.target.value }))}
+                        placeholder="Shop 12, Main Boulevard"
+                        required
+                      />
+                    </label>
+                  </div>
+
+                  <div className="form-footer">
+                    <button className="primary-button" type="submit" disabled={settingsStatus === 'saving'}>
+                      {settingsStatus === 'saving' ? 'Saving...' : 'Save salon info'}
+                    </button>
+                    <div className="form-message">
+                      {settingsError ? (
+                        <span className="error-text">{settingsError}</span>
+                      ) : settingsStatus === 'saved' ? (
+                        <span className="success-text">Salon information updated.</span>
+                      ) : (
+                        <span className="muted">These details appear on printed receipts.</span>
+                      )}
+                    </div>
+                  </div>
+                </form>
+              </section>
+
+              <section className="panel dashboard-panel">
+                <div className="dashboard-panel-head">
+                  <div>
+                    <p className="eyebrow">Loyalty rules</p>
+                    <h2>Points configuration</h2>
+                  </div>
+                  <span className={`pill ${settingsStatus === 'saved' ? 'pill-online' : 'pill-offline'}`}>
+                    {settingsStatus === 'saved' ? 'Saved' : 'Local only'}
+                  </span>
+                </div>
+
+                <form className="new-item-form" onSubmit={saveLoyaltySettings}>
+                  <div className="form-grid">
+                    <label>
+                      <span>Points per 100 currency</span>
+                      <input
+                        className="field"
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={loyaltyForm.pointsPer100Currency}
+                        onChange={(event) =>
+                          setLoyaltyForm((current) => ({ ...current, pointsPer100Currency: event.target.value }))
+                        }
+                        required
+                      />
+                    </label>
+                    <label>
+                      <span>Redemption value per point</span>
+                      <input
+                        className="field"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={loyaltyForm.redemptionValuePerPoint}
+                        onChange={(event) =>
+                          setLoyaltyForm((current) => ({ ...current, redemptionValuePerPoint: event.target.value }))
+                        }
+                        required
+                      />
+                    </label>
+                    <label>
+                      <span>Minimum redeem points</span>
+                      <input
+                        className="field"
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={loyaltyForm.minimumRedeemPoints}
+                        onChange={(event) =>
+                          setLoyaltyForm((current) => ({ ...current, minimumRedeemPoints: event.target.value }))
+                        }
+                        required
+                      />
+                    </label>
+                  </div>
+
+                  <div className="form-footer">
+                    <button className="primary-button" type="submit" disabled={settingsStatus === 'saving'}>
+                      {settingsStatus === 'saving' ? 'Saving...' : 'Save loyalty rules'}
+                    </button>
+                    <div className="form-message">
+                      <span className="muted">
+                        Earn is calculated per 100 currency spent. Redemption respects the minimum threshold.
+                      </span>
+                    </div>
+                  </div>
+                </form>
+              </section>
+            </div>
+
+            <div className="dashboard-grid">
+              <section className="panel dashboard-panel">
+                <div className="dashboard-panel-head">
+                  <div>
+                    <p className="eyebrow">Database maintenance</p>
+                    <h2>Backup and restore</h2>
+                  </div>
+                </div>
+                <div className="list">
+                  <div className="list-item">
+                    <div>
+                      <strong>Backup database</strong>
+                      <span>Create a local SQLite copy before major changes.</span>
+                    </div>
+                    <div className="right">
+                      <button className="ghost-button" onClick={() => void backupDatabase()} disabled={backupStatus === 'saving'}>
+                        {backupStatus === 'saving' ? 'Backing up...' : 'Backup'}
+                      </button>
+                      {backupMessage ? <span className="muted">{backupMessage}</span> : null}
+                    </div>
+                  </div>
+                  <div className="list-item">
+                    <div>
+                      <strong>Restore database</strong>
+                      <span>Replace the current data with a saved SQLite backup.</span>
+                    </div>
+                    <div className="right">
+                      <button className="danger-button" onClick={() => void restoreDatabase()} disabled={restoreStatus === 'saving'}>
+                        {restoreStatus === 'saving' ? 'Restoring...' : 'Restore'}
+                      </button>
+                      {restoreMessage ? <span className="muted">{restoreMessage}</span> : null}
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </div>
           </section>
         ) : (
           <section className="inventory-view">

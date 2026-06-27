@@ -58,8 +58,13 @@ npm run electron:build
 ## What the app does
 
 - Loads seeded products into a local SQLite database on first launch
-- Lets you create sales and print receipts
+- Loads seeded service/package templates into a local SQLite database on first launch
+- Lets you create invoices/bills and print receipts
 - Tracks inventory adjustments
+- Lets you create and browse treatment/service packages
+- Includes revenue, customer, visit, and loyalty reports
+- Lets you configure salon information and loyalty rules
+- Supports local SQLite backup and restore from the Settings screen
 - Keeps sync queue state for offline-first workflows
 
 ## Local data

@@ -3,6 +3,22 @@ import type { Product } from './schema';
 
 contextBridge.exposeInMainWorld('pos', {
   getDashboard: () => ipcRenderer.invoke('dashboard:get'),
+  getReports: () => ipcRenderer.invoke('reports:get'),
+  getSettings: () => ipcRenderer.invoke('settings:get'),
+  updateSalonInfo: (payload: {
+    name?: string;
+    phone?: string;
+    email?: string;
+    address?: string;
+    tagline?: string;
+  }) => ipcRenderer.invoke('settings:update-salon', payload),
+  updateLoyaltyRules: (payload: {
+    pointsPer100Currency?: number;
+    redemptionValuePerPoint?: number;
+    minimumRedeemPoints?: number;
+  }) => ipcRenderer.invoke('settings:update-loyalty', payload),
+  backupDatabase: () => ipcRenderer.invoke('database:backup'),
+  restoreDatabase: () => ipcRenderer.invoke('database:restore'),
   listProducts: () => ipcRenderer.invoke('products:list'),
   listCustomers: () => ipcRenderer.invoke('customers:list'),
   findCustomers: (payload: { query?: string; limit?: number }) => ipcRenderer.invoke('customers:find', payload),
@@ -16,10 +32,13 @@ contextBridge.exposeInMainWorld('pos', {
   createVisit: (payload: {
     customerId?: string | null;
     customerName?: string;
-    serviceName: string;
-    amount: number;
+    serviceId?: string | null;
+    serviceName?: string;
+    amount?: number;
     notes?: string;
   }) => ipcRenderer.invoke('visits:create', payload),
+  redeemCustomerPoints: (payload: { customerId: string; points: number; notes?: string }) =>
+    ipcRenderer.invoke('loyalty:redeem', payload),
   createProduct: (payload: {
     sku: string;
     barcode: string;
@@ -29,6 +48,13 @@ contextBridge.exposeInMainWorld('pos', {
     stock: number;
     taxRate: number;
   }) => ipcRenderer.invoke('products:create', payload),
+  listServices: () => ipcRenderer.invoke('services:list'),
+  createService: (payload: {
+    code: string;
+    name: string;
+    description: string;
+    price: number;
+  }) => ipcRenderer.invoke('services:create', payload),
   deleteProduct: (payload: { productId: string }) => ipcRenderer.invoke('products:delete', payload),
   deleteProductPermanently: (payload: { productId: string }) =>
     ipcRenderer.invoke('products:delete-permanent', payload),
@@ -79,8 +105,12 @@ declare global {
           id: string;
           customerId: string | null;
           customerName: string;
+          serviceId: string | null;
+          serviceCode: string | null;
           serviceName: string;
+          servicePrice: number;
           amount: number;
+          priceOverride: number;
           pointsEarned: number;
           notes: string | null;
           createdAt: string;
@@ -90,7 +120,141 @@ declare global {
         online: boolean;
         registerName: string;
       }>;
+      getReports: () => Promise<{
+        revenue: {
+          saleCount: number;
+          totalRevenue: number;
+          totalTax: number;
+          totalDiscount: number;
+          averageSaleValue: number;
+          topPaymentMethod: string;
+          monthlyTrend: Array<{
+            month: string;
+            revenue: number;
+            saleCount: number;
+          }>;
+          recentSales: Array<{
+            id: string;
+            receiptNo: string;
+            cashierName: string;
+            subtotal: number;
+            taxTotal: number;
+            discountTotal: number;
+            grandTotal: number;
+            paymentMethod: string;
+            itemCount: number;
+            createdAt: string;
+          }>;
+        };
+        customers: {
+          totalCustomers: number;
+          activeCustomers: number;
+          newCustomersThisMonth: number;
+          averageVisitsPerCustomer: number;
+          topCustomers: Array<{
+            id: string;
+            name: string;
+            visitsCount: number;
+            loyaltyPoints: number;
+            totalSpent: number;
+            lastVisitAt: string | null;
+          }>;
+        };
+        visits: {
+          totalVisits: number;
+          visitsToday: number;
+          manualVisits: number;
+          saleVisits: number;
+          topServices: Array<{
+            serviceName: string;
+            visitCount: number;
+            totalAmount: number;
+          }>;
+          recentVisits: Array<{
+            id: string;
+            customerId: string | null;
+            customerName: string;
+            serviceId: string | null;
+            serviceCode: string | null;
+            serviceName: string;
+            servicePrice: number;
+            amount: number;
+            priceOverride: number;
+            pointsEarned: number;
+            notes: string | null;
+            createdAt: string;
+            source: string;
+          }>;
+        };
+        loyalty: {
+          totalEarned: number;
+          totalRedeemed: number;
+          outstandingBalance: number;
+          topBalances: Array<{
+            id: string;
+            name: string;
+            earned: number;
+            redeemed: number;
+            balance: number;
+          }>;
+          recentTransactions: Array<{
+            id: string;
+            customerId: string;
+            customerName: string;
+            transactionType: 'earn' | 'redeem';
+            points: number;
+            notes: string | null;
+            createdAt: string;
+          }>;
+        };
+      }>;
+      getSettings: () => Promise<{
+        salonInfo: {
+          name: string;
+          phone: string;
+          email: string;
+          address: string;
+          tagline: string;
+        };
+        loyaltyRules: {
+          pointsPer100Currency: number;
+          redemptionValuePerPoint: number;
+          minimumRedeemPoints: number;
+        };
+      }>;
+      updateSalonInfo: (payload: {
+        name?: string;
+        phone?: string;
+        email?: string;
+        address?: string;
+        tagline?: string;
+      }) => Promise<{
+        name: string;
+        phone: string;
+        email: string;
+        address: string;
+        tagline: string;
+      }>;
+      updateLoyaltyRules: (payload: {
+        pointsPer100Currency?: number;
+        redemptionValuePerPoint?: number;
+        minimumRedeemPoints?: number;
+      }) => Promise<{
+        pointsPer100Currency: number;
+        redemptionValuePerPoint: number;
+        minimumRedeemPoints: number;
+      }>;
+      backupDatabase: () => Promise<{ saved: boolean; path?: string }>;
+      restoreDatabase: () => Promise<{ restored: boolean; restoredFrom?: string; databasePath?: string }>;
       listProducts: () => Promise<Product[]>;
+      listServices: () => Promise<Array<{
+        id: string;
+        code: string;
+        name: string;
+        description: string;
+        price: number;
+        isActive: number;
+      }>>;
       listCustomers: () => Promise<Array<{
         id: string;
         name: string;
@@ -132,8 +296,12 @@ declare global {
           id: string;
           customerId: string | null;
           customerName: string;
+          serviceId: string | null;
+          serviceCode: string | null;
           serviceName: string;
+          servicePrice: number;
           amount: number;
+          priceOverride: number;
           pointsEarned: number;
           notes: string | null;
           createdAt: string;
@@ -143,6 +311,17 @@ declare global {
           serviceName: string;
           visitCount: number;
           totalAmount: number;
+        }>;
+        pointsEarnedTotal: number;
+        pointsRedeemedTotal: number;
+        loyaltyTransactions: Array<{
+          id: string;
+          customerId: string;
+          customerName: string;
+          transactionType: 'earn' | 'redeem';
+          points: number;
+          notes: string | null;
+          createdAt: string;
         }>;
       }>;
       getRecentSales: () => Promise<Array<{
@@ -196,19 +375,30 @@ declare global {
       createVisit: (payload: {
         customerId?: string | null;
         customerName?: string;
-        serviceName: string;
-        amount: number;
+        serviceId?: string | null;
+        serviceName?: string;
+        amount?: number;
         notes?: string;
       }) => Promise<{
         id: string;
         customerId: string | null;
         customerName: string;
+        serviceId: string | null;
+        serviceCode: string | null;
         serviceName: string;
+        servicePrice: number;
         amount: number;
+        priceOverride: number;
         pointsEarned: number;
         notes: string | null;
         createdAt: string;
         source: string;
+      }>;
+      redeemCustomerPoints: (payload: { customerId: string; points: number; notes?: string }) => Promise<{
+        customerId: string;
+        pointsRedeemed: number;
+        loyaltyPoints: number;
+        createdAt: string;
       }>;
       createProduct: (payload: {
         sku: string;
@@ -227,6 +417,19 @@ declare global {
         price: number;
         stock: number;
         taxRate: number;
+        isActive: number;
+      }>;
+      createService: (payload: {
+        code: string;
+        name: string;
+        description: string;
+        price: number;
+      }) => Promise<{
+        id: string;
+        code: string;
+        name: string;
+        description: string;
+        price: number;
         isActive: number;
       }>;
       deleteProduct: (payload: { productId: string }) => Promise<{

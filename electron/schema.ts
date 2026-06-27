@@ -15,6 +15,15 @@ export type CartItem = Product & {
   lineTotal: number;
 };
 
+export type ServicePackage = {
+  id: string;
+  code: string;
+  name: string;
+  description: string;
+  price: number;
+  isActive: number;
+};
+
 export type SaleSummary = {
   subtotal: number;
   taxTotal: number;

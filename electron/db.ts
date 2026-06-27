@@ -1,8 +1,9 @@
 import Database from 'better-sqlite3';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { app } from 'electron';
-import type { CartItem, Product, SaleSummary } from './schema';
+import type { CartItem, Product, SaleSummary, ServicePackage } from './schema';
 
 type SaleRecord = SaleSummary & {
   id: string;
@@ -38,13 +39,29 @@ type VisitRecord = {
   id: string;
   customerId: string | null;
   customerName: string;
+  serviceId: string | null;
+  serviceCode: string | null;
   serviceName: string;
+  servicePrice: number;
   amount: number;
+  priceOverride: number;
   pointsEarned: number;
   notes: string | null;
   createdAt: string;
   source: string;
 };
+
+type LoyaltyTransactionRecord = {
+  id: string;
+  customerId: string;
+  customerName: string;
+  transactionType: 'earn' | 'redeem';
+  points: number;
+  notes: string | null;
+  createdAt: string;
+};
+
+type ServiceRecord = ServicePackage;
 
 export type SyncQueueRow = {
   id: string;
@@ -66,18 +83,122 @@ export type CustomerProfile = {
   customer: CustomerRecord;
   recentVisits: VisitRecord[];
   favoriteServices: CustomerServiceSummary[];
+  pointsEarnedTotal: number;
+  pointsRedeemedTotal: number;
+  loyaltyTransactions: LoyaltyTransactionRecord[];
+};
+
+export type RevenueReport = {
+  saleCount: number;
+  totalRevenue: number;
+  totalTax: number;
+  totalDiscount: number;
+  averageSaleValue: number;
+  topPaymentMethod: string;
+  monthlyTrend: Array<{
+    month: string;
+    revenue: number;
+    saleCount: number;
+  }>;
+  recentSales: SaleRecord[];
+};
+
+export type CustomerReport = {
+  totalCustomers: number;
+  activeCustomers: number;
+  newCustomersThisMonth: number;
+  averageVisitsPerCustomer: number;
+  topCustomers: Array<{
+    id: string;
+    name: string;
+    visitsCount: number;
+    loyaltyPoints: number;
+    totalSpent: number;
+    lastVisitAt: string | null;
+  }>;
+};
+
+export type VisitReport = {
+  totalVisits: number;
+  visitsToday: number;
+  manualVisits: number;
+  saleVisits: number;
+  topServices: CustomerServiceSummary[];
+  recentVisits: VisitRecord[];
+};
+
+export type LoyaltyReport = {
+  totalEarned: number;
+  totalRedeemed: number;
+  outstandingBalance: number;
+  topBalances: Array<{
+    id: string;
+    name: string;
+    earned: number;
+    redeemed: number;
+    balance: number;
+  }>;
+  recentTransactions: LoyaltyTransactionRecord[];
+};
+
+export type ReportsSnapshot = {
+  revenue: RevenueReport;
+  customers: CustomerReport;
+  visits: VisitReport;
+  loyalty: LoyaltyReport;
+};
+
+export type SalonInfoSettings = {
+  name: string;
+  phone: string;
+  email: string;
+  address: string;
+  tagline: string;
+};
+
+export type LoyaltyRulesSettings = {
+  pointsPer100Currency: number;
+  redemptionValuePerPoint: number;
+  minimumRedeemPoints: number;
+};
+
+export type AppSettingsSnapshot = {
+  salonInfo: SalonInfoSettings;
+  loyaltyRules: LoyaltyRulesSettings;
 };
 
 let database: InstanceType<typeof Database> | null = null;
 let initialized = false;
 
+const DB_FILENAME = 'offline-pos.sqlite3';
+const SALON_INFO_KEY = 'salon_info';
+const LOYALTY_RULES_KEY = 'loyalty_rules';
+
+const defaultSalonInfo: SalonInfoSettings = {
+  name: 'Front Counter Salon',
+  phone: '0300-0000000',
+  email: 'hello@example.com',
+  address: 'Main Boulevard, Lahore',
+  tagline: 'Calm beauty operations, built for the front desk.',
+};
+
+const defaultLoyaltyRules: LoyaltyRulesSettings = {
+  pointsPer100Currency: 1,
+  redemptionValuePerPoint: 1,
+  minimumRedeemPoints: 50,
+};
+
 function getDatabase() {
   if (!database) {
-    const dbPath = path.join(app.getPath('userData'), 'offline-pos.sqlite3');
+    const dbPath = getDatabasePath();
     database = new Database(dbPath);
     database.pragma('journal_mode = WAL');
   }
   return database;
+}
+
+export function getDatabasePath() {
+  return path.join(app.getPath('userData'), DB_FILENAME);
 }
 
 const money = (value: number) => Math.round(value * 100) / 100;
@@ -157,12 +278,40 @@ export function initDb() {
       id TEXT PRIMARY KEY,
       customerId TEXT,
       customerName TEXT NOT NULL,
+      serviceId TEXT,
+      serviceCode TEXT,
       serviceName TEXT NOT NULL,
+      servicePrice REAL NOT NULL DEFAULT 0,
       amount REAL NOT NULL,
+      priceOverride INTEGER NOT NULL DEFAULT 0,
       pointsEarned INTEGER NOT NULL DEFAULT 0,
       notes TEXT,
       createdAt TEXT NOT NULL,
       source TEXT NOT NULL DEFAULT 'manual'
+    );
+
+    CREATE TABLE IF NOT EXISTS loyalty_transactions (
+      id TEXT PRIMARY KEY,
+      customerId TEXT NOT NULL,
+      customerName TEXT NOT NULL,
+      transactionType TEXT NOT NULL,
+      points INTEGER NOT NULL,
+      notes TEXT,
+      createdAt TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS services (
+      id TEXT PRIMARY KEY,
+      code TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      price REAL NOT NULL,
+      isActive INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
     );
 
     CREATE INDEX IF NOT EXISTS idx_products_active_category_name ON products (isActive, category, name);
@@ -173,6 +322,9 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_visits_customer_id_created_at ON visits (customerId, createdAt);
     CREATE INDEX IF NOT EXISTS idx_customers_active_name ON customers (isActive, name);
     CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers (phone);
+    CREATE INDEX IF NOT EXISTS idx_loyalty_transactions_customer_id_created_at ON loyalty_transactions (customerId, createdAt);
+    CREATE INDEX IF NOT EXISTS idx_services_active_name ON services (isActive, name);
+    CREATE INDEX IF NOT EXISTS idx_services_code ON services (code);
     CREATE INDEX IF NOT EXISTS idx_sync_queue_status_created_at ON sync_queue (status, createdAt);
   `);
 
@@ -183,6 +335,37 @@ export function initDb() {
       throw error;
     }
   }
+
+  const visitColumnStatements = [
+    'ALTER TABLE visits ADD COLUMN serviceId TEXT',
+    'ALTER TABLE visits ADD COLUMN serviceCode TEXT',
+    'ALTER TABLE visits ADD COLUMN servicePrice REAL NOT NULL DEFAULT 0',
+    'ALTER TABLE visits ADD COLUMN priceOverride INTEGER NOT NULL DEFAULT 0',
+  ];
+  for (const statement of visitColumnStatements) {
+    try {
+      db.prepare(statement).run();
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('duplicate column name')) {
+        throw error;
+      }
+    }
+  }
+
+  try {
+    db.prepare('ALTER TABLE loyalty_transactions ADD COLUMN notes TEXT').run();
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes('duplicate column name')) {
+      throw error;
+    }
+  }
+
+  db.prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?), (?, ?)').run(
+    SALON_INFO_KEY,
+    JSON.stringify(defaultSalonInfo),
+    LOYALTY_RULES_KEY,
+    JSON.stringify(defaultLoyaltyRules)
+  );
 
   const count = db.prepare('SELECT COUNT(*) as count FROM products').get() as { count: number };
   if (count.count === 0) {
@@ -244,7 +427,134 @@ export function initDb() {
     for (const row of rows) seedCustomer.run(row);
   }
 
+  const serviceCount = db.prepare('SELECT COUNT(*) as count FROM services').get() as { count: number };
+  if (serviceCount.count === 0) {
+    const seedService = db.prepare(`
+      INSERT INTO services (id, code, name, description, price, isActive)
+      VALUES (@id, @code, @name, @description, @price, 1)
+    `);
+    const rows: Omit<ServiceRecord, 'isActive'>[] = [
+      {
+        id: crypto.randomUUID(),
+        code: 'FAC-1001',
+        name: 'Deep Cleansing Facial',
+        description: 'A refreshing facial treatment focused on cleansing and hydration.',
+        price: 3500,
+      },
+      {
+        id: crypto.randomUUID(),
+        code: 'HAI-2001',
+        name: 'Signature Hair Spa',
+        description: 'Scalp massage, nourishing mask, and smooth blow-dry finish.',
+        price: 4800,
+      },
+      {
+        id: crypto.randomUUID(),
+        code: 'NAI-3001',
+        name: 'Classic Manicure',
+        description: 'Nail shaping, cuticle care, polish, and finishing touch.',
+        price: 2200,
+      },
+    ];
+    for (const row of rows) seedService.run(row);
+  }
+
   initialized = true;
+}
+
+function readSetting<T>(key: string, fallback: T): T {
+  const row = getDatabase().prepare('SELECT value FROM app_settings WHERE key = ?').get(key) as
+    | { value: string }
+    | undefined;
+  if (!row) return fallback;
+  try {
+    return JSON.parse(row.value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveSetting(key: string, value: unknown) {
+  getDatabase()
+    .prepare(
+      'INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+    )
+    .run(key, JSON.stringify(value));
+}
+
+export function getSettings(): AppSettingsSnapshot {
+  return {
+    salonInfo: readSetting(SALON_INFO_KEY, defaultSalonInfo),
+    loyaltyRules: readSetting(LOYALTY_RULES_KEY, defaultLoyaltyRules),
+  };
+}
+
+export function updateSalonInfo(payload: Partial<SalonInfoSettings>) {
+  const current = getSettings().salonInfo;
+  const next = {
+    name: payload.name?.trim() || current.name,
+    phone: payload.phone?.trim() || '',
+    email: payload.email?.trim() || '',
+    address: payload.address?.trim() || '',
+    tagline: payload.tagline?.trim() || '',
+  };
+  saveSetting(SALON_INFO_KEY, next);
+  return next;
+}
+
+export function updateLoyaltyRules(payload: Partial<LoyaltyRulesSettings>) {
+  const current = getSettings().loyaltyRules;
+  const next = {
+    pointsPer100Currency: Number.isFinite(payload.pointsPer100Currency)
+      ? Math.max(0, Number(payload.pointsPer100Currency))
+      : current.pointsPer100Currency,
+    redemptionValuePerPoint: Number.isFinite(payload.redemptionValuePerPoint)
+      ? Math.max(0, Number(payload.redemptionValuePerPoint))
+      : current.redemptionValuePerPoint,
+    minimumRedeemPoints: Number.isFinite(payload.minimumRedeemPoints)
+      ? Math.max(0, Math.trunc(Number(payload.minimumRedeemPoints)))
+      : current.minimumRedeemPoints,
+  };
+  saveSetting(LOYALTY_RULES_KEY, next);
+  return next;
+}
+
+export function backupDatabase(destinationPath: string) {
+  const dbPath = getDatabasePath();
+  const db = getDatabase();
+  db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+  fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
+  fs.copyFileSync(dbPath, destinationPath);
+  return destinationPath;
+}
+
+export function restoreDatabase(sourcePath: string) {
+  const dbPath = getDatabasePath();
+
+  if (!fs.existsSync(sourcePath)) {
+    throw new Error('Backup file not found');
+  }
+
+  if (database) {
+    database.close();
+    database = null;
+  }
+
+  fs.copyFileSync(sourcePath, dbPath);
+  for (const suffix of ['-wal', '-shm']) {
+    const journalPath = `${dbPath}${suffix}`;
+    if (fs.existsSync(journalPath)) {
+      fs.rmSync(journalPath, { force: true });
+    }
+  }
+
+  initialized = false;
+  initDb();
+
+  return {
+    restoredFrom: sourcePath,
+    databasePath: dbPath,
+  };
 }
 
 export function listProducts(): Product[] {
@@ -281,7 +591,7 @@ export function getStats() {
     .get() as { count: number };
   const recentVisits = db
     .prepare(
-      `SELECT id, customerId, customerName, serviceName, amount, pointsEarned, notes, createdAt, source
+      `SELECT id, customerId, customerName, serviceId, serviceCode, serviceName, servicePrice, amount, priceOverride, pointsEarned, notes, createdAt, source
        FROM visits
        ORDER BY createdAt DESC
        LIMIT 6`
@@ -475,12 +785,212 @@ export function getRecentSales(limit = 10) {
     .all(limit) as SaleRecord[];
 }
 
+export function getReports(): ReportsSnapshot {
+  const db = getDatabase();
+
+  const revenueSummary = db
+    .prepare(
+      `SELECT
+        COUNT(*) as saleCount,
+        COALESCE(SUM(grandTotal), 0) as totalRevenue,
+        COALESCE(SUM(taxTotal), 0) as totalTax,
+        COALESCE(SUM(discountTotal), 0) as totalDiscount
+       FROM sales`
+    )
+    .get() as { saleCount: number; totalRevenue: number; totalTax: number; totalDiscount: number };
+
+  const topPaymentMethod = db
+    .prepare(
+      `SELECT paymentMethod, COUNT(*) as saleCount
+       FROM sales
+       GROUP BY paymentMethod
+       ORDER BY saleCount DESC, paymentMethod ASC
+       LIMIT 1`
+    )
+    .get() as { paymentMethod: string; saleCount: number } | undefined;
+
+  const monthlyTrend = db
+    .prepare(
+      `SELECT strftime('%Y-%m', createdAt) as month, COALESCE(SUM(grandTotal), 0) as revenue, COUNT(*) as saleCount
+       FROM sales
+       GROUP BY month
+       ORDER BY month DESC
+       LIMIT 6`
+    )
+    .all() as Array<{ month: string; revenue: number; saleCount: number }>;
+
+  const recentSales = db
+    .prepare(
+      'SELECT id, receiptNo, cashierName, subtotal, taxTotal, discountTotal, grandTotal, paymentMethod, itemCount, createdAt FROM sales ORDER BY createdAt DESC LIMIT 8'
+    )
+    .all() as SaleRecord[];
+
+  const customerSummary = db
+    .prepare(
+      `SELECT
+        COUNT(*) as totalCustomers,
+        COALESCE(SUM(CASE WHEN isActive = 1 THEN 1 ELSE 0 END), 0) as activeCustomers,
+        COALESCE(SUM(CASE WHEN strftime('%Y-%m', createdAt) = strftime('%Y-%m', 'now') THEN 1 ELSE 0 END), 0) as newCustomersThisMonth,
+        COALESCE(AVG(visitsCount), 0) as averageVisitsPerCustomer
+       FROM customers`
+    )
+    .get() as {
+    totalCustomers: number;
+    activeCustomers: number;
+    newCustomersThisMonth: number;
+    averageVisitsPerCustomer: number;
+  };
+
+  const topCustomers = db
+    .prepare(
+      `SELECT
+        c.id,
+        c.name,
+        c.visitsCount,
+        c.loyaltyPoints,
+        c.lastVisitAt,
+        COALESCE(SUM(v.amount), 0) as totalSpent
+       FROM customers c
+       LEFT JOIN visits v ON v.customerId = c.id
+       WHERE c.isActive = 1
+       GROUP BY c.id
+       ORDER BY totalSpent DESC, c.visitsCount DESC, c.name ASC
+       LIMIT 10`
+    )
+    .all() as Array<{
+    id: string;
+    name: string;
+    visitsCount: number;
+    loyaltyPoints: number;
+    lastVisitAt: string | null;
+    totalSpent: number;
+  }>;
+
+  const visitSummary = db
+    .prepare(
+      `SELECT
+        COUNT(*) as totalVisits,
+        COALESCE(SUM(CASE WHEN date(createdAt) = date('now') THEN 1 ELSE 0 END), 0) as visitsToday,
+        COALESCE(SUM(CASE WHEN source = 'manual' THEN 1 ELSE 0 END), 0) as manualVisits,
+        COALESCE(SUM(CASE WHEN source = 'sale' THEN 1 ELSE 0 END), 0) as saleVisits
+       FROM visits`
+    )
+    .get() as {
+    totalVisits: number;
+    visitsToday: number;
+    manualVisits: number;
+    saleVisits: number;
+  };
+
+  const topServices = db
+    .prepare(
+      `SELECT serviceName, COUNT(*) as visitCount, COALESCE(SUM(amount), 0) as totalAmount
+       FROM visits
+       GROUP BY serviceName
+       ORDER BY visitCount DESC, totalAmount DESC, serviceName ASC
+       LIMIT 8`
+    )
+    .all() as CustomerServiceSummary[];
+
+  const recentVisits = db
+    .prepare(
+      'SELECT id, customerId, customerName, serviceId, serviceCode, serviceName, servicePrice, amount, priceOverride, pointsEarned, notes, createdAt, source FROM visits ORDER BY createdAt DESC LIMIT 8'
+    )
+    .all() as VisitRecord[];
+
+  const loyaltySummary = db
+    .prepare(
+      `SELECT
+        COALESCE(SUM(CASE WHEN transactionType = 'earn' THEN points ELSE 0 END), 0) as totalEarned,
+        COALESCE(SUM(CASE WHEN transactionType = 'redeem' THEN points ELSE 0 END), 0) as totalRedeemed
+       FROM loyalty_transactions`
+    )
+    .get() as { totalEarned: number; totalRedeemed: number };
+
+  const outstandingBalance = db
+    .prepare('SELECT COALESCE(SUM(loyaltyPoints), 0) as total FROM customers WHERE isActive = 1')
+    .get() as { total: number };
+
+  const topBalances = db
+    .prepare(
+      `SELECT
+        c.id,
+        c.name,
+        c.loyaltyPoints as balance,
+        COALESCE(SUM(CASE WHEN lt.transactionType = 'earn' THEN lt.points ELSE 0 END), 0) as earned,
+        COALESCE(SUM(CASE WHEN lt.transactionType = 'redeem' THEN lt.points ELSE 0 END), 0) as redeemed
+       FROM customers c
+       LEFT JOIN loyalty_transactions lt ON lt.customerId = c.id
+       WHERE c.isActive = 1
+       GROUP BY c.id
+       ORDER BY balance DESC, earned DESC, c.name ASC
+       LIMIT 10`
+    )
+    .all() as Array<{
+    id: string;
+    name: string;
+    earned: number;
+    redeemed: number;
+    balance: number;
+  }>;
+
+  const recentTransactions = db
+    .prepare(
+      `SELECT id, customerId, customerName, transactionType, points, notes, createdAt
+       FROM loyalty_transactions
+       ORDER BY createdAt DESC
+       LIMIT 10`
+    )
+    .all() as LoyaltyTransactionRecord[];
+
+  return {
+    revenue: {
+      saleCount: revenueSummary.saleCount,
+      totalRevenue: revenueSummary.totalRevenue,
+      totalTax: revenueSummary.totalTax,
+      totalDiscount: revenueSummary.totalDiscount,
+      averageSaleValue: revenueSummary.saleCount > 0 ? money(revenueSummary.totalRevenue / revenueSummary.saleCount) : 0,
+      topPaymentMethod: topPaymentMethod?.paymentMethod ?? 'Cash',
+      monthlyTrend,
+      recentSales,
+    },
+    customers: {
+      totalCustomers: customerSummary.totalCustomers,
+      activeCustomers: customerSummary.activeCustomers,
+      newCustomersThisMonth: customerSummary.newCustomersThisMonth,
+      averageVisitsPerCustomer: money(customerSummary.averageVisitsPerCustomer),
+      topCustomers,
+    },
+    visits: {
+      totalVisits: visitSummary.totalVisits,
+      visitsToday: visitSummary.visitsToday,
+      manualVisits: visitSummary.manualVisits,
+      saleVisits: visitSummary.saleVisits,
+      topServices,
+      recentVisits,
+    },
+    loyalty: {
+      totalEarned: loyaltySummary.totalEarned,
+      totalRedeemed: loyaltySummary.totalRedeemed,
+      outstandingBalance: outstandingBalance.total,
+      topBalances,
+      recentTransactions,
+    },
+  };
+}
+
 export function listInventory() {
   return getDatabase()
     .prepare(
       'SELECT id, sku, barcode, name, category, price, stock, taxRate, isActive FROM products ORDER BY category, name'
     )
     .all();
+}
+
+export function listServices(): ServiceRecord[] {
+  return getDatabase()
+    .prepare('SELECT id, code, name, description, price, isActive FROM services WHERE isActive = 1 ORDER BY name')
+    .all() as ServiceRecord[];
 }
 
 export function createProduct(payload: {
@@ -540,6 +1050,41 @@ export function createProduct(payload: {
   );
 
   return product;
+}
+
+export function createService(payload: { code: string; name: string; description: string; price: number }) {
+  const db = getDatabase();
+  const code = payload.code.trim();
+  const name = payload.name.trim();
+  const description = payload.description.trim();
+
+  if (!code || !name || !description) {
+    throw new Error('Code, name, and description are required');
+  }
+  if (payload.price < 0) throw new Error('Price cannot be negative');
+
+  const existing = db
+    .prepare('SELECT id FROM services WHERE code = ?')
+    .get(code) as { id: string } | undefined;
+  if (existing) {
+    throw new Error('A service with the same code already exists');
+  }
+
+  const service = {
+    id: crypto.randomUUID(),
+    code,
+    name,
+    description,
+    price: money(payload.price),
+    isActive: 1,
+  };
+
+  db.prepare(`
+    INSERT INTO services (id, code, name, description, price, isActive)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(service.id, service.code, service.name, service.description, service.price, service.isActive);
+
+  return service;
 }
 
 export function adjustInventory(payload: {
@@ -761,7 +1306,7 @@ export function getCustomerProfile(customerId: string): CustomerProfile {
 
   const recentVisits = db
     .prepare(
-      'SELECT id, customerId, customerName, serviceName, amount, pointsEarned, notes, createdAt, source FROM visits WHERE customerId = ? ORDER BY createdAt DESC LIMIT 20'
+      'SELECT id, customerId, customerName, serviceId, serviceCode, serviceName, servicePrice, amount, priceOverride, pointsEarned, notes, createdAt, source FROM visits WHERE customerId = ? ORDER BY createdAt DESC'
     )
     .all(customerId) as VisitRecord[];
 
@@ -776,28 +1321,83 @@ export function getCustomerProfile(customerId: string): CustomerProfile {
     )
     .all(customerId) as CustomerServiceSummary[];
 
+  const pointsEarnedTotal = db
+    .prepare(
+      `SELECT COALESCE(SUM(pointsEarned), 0) as total
+       FROM visits
+       WHERE customerId = ?`
+    )
+    .get(customerId) as { total: number };
+
+  const pointsRedeemedTotal = db
+    .prepare(
+      `SELECT COALESCE(SUM(points), 0) as total
+       FROM loyalty_transactions
+       WHERE customerId = ? AND transactionType = 'redeem'`
+    )
+    .get(customerId) as { total: number };
+
+  const loyaltyTransactions = db
+    .prepare(
+      `SELECT id, customerId, customerName, transactionType, points, notes, createdAt
+       FROM loyalty_transactions
+       WHERE customerId = ?
+       ORDER BY createdAt DESC`
+    )
+    .all(customerId) as LoyaltyTransactionRecord[];
+
   return {
     customer,
     recentVisits,
     favoriteServices,
+    pointsEarnedTotal: pointsEarnedTotal.total,
+    pointsRedeemedTotal: pointsRedeemedTotal.total,
+    loyaltyTransactions,
   };
 }
 
 export function createVisit(payload: {
   customerId?: string | null;
   customerName?: string;
-  serviceName: string;
-  amount: number;
+  serviceId?: string | null;
+  serviceName?: string;
+  amount?: number;
   notes?: string;
 }) {
   const db = getDatabase();
-  const serviceName = payload.serviceName.trim();
-  if (!serviceName) throw new Error('Service name is required');
-  if (payload.amount < 0) throw new Error('Amount cannot be negative');
+  const loyaltyRules = getSettings().loyaltyRules;
+  const serviceId = payload.serviceId?.trim() || null;
+  const amountInput = typeof payload.amount === 'number' ? payload.amount : null;
 
   const customerId = payload.customerId?.trim() || null;
   let customerName = payload.customerName?.trim() || 'Walk-in';
-  let pointsEarned = payload.amount > 0 ? Math.max(1, Math.floor(payload.amount / 100)) : 0;
+  let serviceCode: string | null = null;
+  let serviceName = payload.serviceName?.trim() || '';
+  let servicePrice = 0;
+  let amount = amountInput ?? 0;
+
+  if (serviceId) {
+    const service = db
+      .prepare('SELECT id, code, name, price FROM services WHERE id = ? AND isActive = 1')
+      .get(serviceId) as { id: string; code: string; name: string; price: number } | undefined;
+    if (!service) throw new Error('Service package not found');
+    serviceName = service.name;
+    serviceCode = service.code;
+    servicePrice = service.price;
+    amount = amountInput ?? service.price;
+  }
+
+  if (!serviceName) throw new Error('Service name is required');
+  if (amount < 0) throw new Error('Amount cannot be negative');
+
+  if (!serviceId && amountInput === null) {
+    throw new Error('Amount is required when no service package is selected');
+  }
+  if (!Number.isFinite(amount)) throw new Error('Amount must be a valid number');
+
+  const priceOverride = serviceId && Math.round(amount * 100) / 100 !== Math.round(servicePrice * 100) / 100 ? 1 : 0;
+  const pointsPer100 = loyaltyRules.pointsPer100Currency;
+  let pointsEarned = amount > 0 ? Math.max(0, Math.floor(amount / 100) * pointsPer100) : 0;
 
   if (customerId) {
     const customer = db
@@ -815,9 +1415,37 @@ export function createVisit(payload: {
 
   const tx = db.transaction(() => {
     db.prepare(`
-      INSERT INTO visits (id, customerId, customerName, serviceName, amount, pointsEarned, notes, createdAt, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, customerId, customerName, serviceName, payload.amount, pointsEarned, notes, createdAt, 'manual');
+      INSERT INTO visits (
+        id,
+        customerId,
+        customerName,
+        serviceId,
+        serviceCode,
+        serviceName,
+        servicePrice,
+        amount,
+        priceOverride,
+        pointsEarned,
+        notes,
+        createdAt,
+        source
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      customerId,
+      customerName,
+      serviceId,
+      serviceCode,
+      serviceName,
+      servicePrice,
+      amount,
+      priceOverride,
+      pointsEarned,
+      notes,
+      createdAt,
+      'manual'
+    );
 
     if (customerId && pointsEarned > 0) {
       db.prepare(`
@@ -827,6 +1455,17 @@ export function createVisit(payload: {
             lastVisitAt = ?
         WHERE id = ?
       `).run(pointsEarned, createdAt, customerId);
+      db.prepare(`
+        INSERT INTO loyalty_transactions (id, customerId, customerName, transactionType, points, notes, createdAt)
+        VALUES (?, ?, ?, 'earn', ?, ?, ?)
+      `).run(
+        crypto.randomUUID(),
+        customerId,
+        customerName,
+        pointsEarned,
+        `Earned from ${serviceName}`,
+        createdAt
+      );
     } else if (customerId) {
       db.prepare(`
         UPDATE customers
@@ -847,8 +1486,12 @@ export function createVisit(payload: {
         id,
         customerId,
         customerName,
+        serviceId,
+        serviceCode,
         serviceName,
-        amount: payload.amount,
+        servicePrice,
+        amount,
+        priceOverride,
         pointsEarned,
         notes,
         createdAt,
@@ -884,8 +1527,12 @@ export function createVisit(payload: {
     id,
     customerId,
     customerName,
+    serviceId,
+    serviceCode,
     serviceName,
-    amount: payload.amount,
+    servicePrice,
+    amount,
+    priceOverride,
     pointsEarned,
     notes,
     createdAt,
@@ -893,10 +1540,49 @@ export function createVisit(payload: {
   } satisfies VisitRecord;
 }
 
+export function redeemCustomerPoints(payload: { customerId: string; points: number; notes?: string }) {
+  const db = getDatabase();
+  const loyaltyRules = getSettings().loyaltyRules;
+  const customerId = payload.customerId.trim();
+  const points = Math.trunc(payload.points);
+  const notes = payload.notes?.trim() || null;
+
+  if (!customerId) throw new Error('Customer id is required');
+  if (!Number.isFinite(points) || points <= 0) throw new Error('Points must be greater than zero');
+  if (points < loyaltyRules.minimumRedeemPoints) {
+    throw new Error(`Minimum redeem amount is ${loyaltyRules.minimumRedeemPoints} points`);
+  }
+
+  const customer = db
+    .prepare('SELECT id, name, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive FROM customers WHERE id = ?')
+    .get(customerId) as CustomerRecord | undefined;
+  if (!customer) throw new Error('Customer not found');
+  if (customer.isActive === 0) throw new Error('Customer is deleted');
+  if (customer.loyaltyPoints < points) throw new Error('Not enough loyalty points');
+
+  const createdAt = new Date().toISOString();
+  const tx = db.transaction(() => {
+    db.prepare('UPDATE customers SET loyaltyPoints = loyaltyPoints - ? WHERE id = ?').run(points, customerId);
+    db.prepare(`
+      INSERT INTO loyalty_transactions (id, customerId, customerName, transactionType, points, notes, createdAt)
+      VALUES (?, ?, ?, 'redeem', ?, ?, ?)
+    `).run(crypto.randomUUID(), customerId, customer.name, points, notes, createdAt);
+  });
+
+  tx();
+
+  return {
+    customerId,
+    pointsRedeemed: points,
+    loyaltyPoints: customer.loyaltyPoints - points,
+    createdAt,
+  };
+}
+
 export function getRecentVisits(limit = 8) {
   return getDatabase()
     .prepare(
-      'SELECT id, customerId, customerName, serviceName, amount, pointsEarned, notes, createdAt, source FROM visits ORDER BY createdAt DESC LIMIT ?'
+      'SELECT id, customerId, customerName, serviceId, serviceCode, serviceName, servicePrice, amount, priceOverride, pointsEarned, notes, createdAt, source FROM visits ORDER BY createdAt DESC LIMIT ?'
     )
     .all(limit) as VisitRecord[];
 }

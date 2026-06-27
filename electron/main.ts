@@ -1,22 +1,31 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import path from 'node:path';
 import {
   adjustInventory,
+  backupDatabase,
   deleteProduct,
   deleteProductPermanently,
   createProduct,
   createCustomer,
+  createService,
   createVisit,
+  redeemCustomerPoints,
   createSale,
   deleteCustomer,
   getRecentSales,
   getStats,
+  getReports,
   getCustomerProfile,
+  getSettings,
   initDb,
   findCustomers,
   listCustomers,
   listInventory,
   listProducts,
+  listServices,
+  restoreDatabase,
+  updateLoyaltyRules,
+  updateSalonInfo,
   updateCustomer,
 } from './db';
 import { SyncService } from './sync';
@@ -63,6 +72,7 @@ function buildReceiptHtml(payload: {
     lineTotal: number;
   }>;
 }) {
+  const { salonInfo } = getSettings();
   const money = new Intl.NumberFormat('en-PK', {
     style: 'currency',
     currency: 'PKR',
@@ -123,7 +133,11 @@ function buildReceiptHtml(payload: {
       </head>
       <body>
         <h1>Offline POS</h1>
+        <p>${salonInfo.name}</p>
+        <p class="muted">${salonInfo.tagline}</p>
         <p class="muted">${payload.receiptNo}</p>
+        <p class="muted">${salonInfo.phone}${salonInfo.email ? ` · ${salonInfo.email}` : ''}</p>
+        <p class="muted">${salonInfo.address}</p>
         <p class="muted">${payload.cashierName} · ${new Date(payload.createdAt).toLocaleString()}</p>
         <table>${rows}</table>
         <div class="totals">
@@ -155,6 +169,34 @@ async function printReceipt(payload: Parameters<typeof buildReceiptHtml>[0]) {
 app.whenReady().then(() => {
   initDb();
   ipcMain.handle('dashboard:get', async () => getStats());
+  ipcMain.handle('reports:get', async () => getReports());
+  ipcMain.handle('settings:get', async () => getSettings());
+  ipcMain.handle('settings:update-salon', async (_event, payload) => updateSalonInfo(payload));
+  ipcMain.handle('settings:update-loyalty', async (_event, payload) => updateLoyaltyRules(payload));
+  ipcMain.handle('database:backup', async () => {
+    const result = await dialog.showSaveDialog({
+      title: 'Backup Offline POS Database',
+      defaultPath: `offline-pos-backup-${new Date().toISOString().slice(0, 10)}.sqlite3`,
+      filters: [{ name: 'SQLite Database', extensions: ['sqlite3', 'db'] }],
+    });
+    if (result.canceled || !result.filePath) {
+      return { saved: false as const };
+    }
+    const backupPath = backupDatabase(result.filePath);
+    return { saved: true as const, path: backupPath };
+  });
+  ipcMain.handle('database:restore', async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Restore Offline POS Database',
+      properties: ['openFile'],
+      filters: [{ name: 'SQLite Database', extensions: ['sqlite3', 'db'] }],
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return { restored: false as const };
+    }
+    const restored = restoreDatabase(result.filePaths[0]);
+    return { restored: true as const, ...restored };
+  });
   ipcMain.handle('products:list', async () => listProducts());
   ipcMain.handle('customers:list', async () => listCustomers());
   ipcMain.handle('customers:find', async (_event, payload) => findCustomers(payload?.query ?? '', payload?.limit ?? 10));
@@ -165,7 +207,10 @@ app.whenReady().then(() => {
   ipcMain.handle('customers:update', async (_event, payload) => updateCustomer(payload));
   ipcMain.handle('customers:delete', async (_event, payload) => deleteCustomer(payload));
   ipcMain.handle('visits:create', async (_event, payload) => createVisit(payload));
+  ipcMain.handle('loyalty:redeem', async (_event, payload) => redeemCustomerPoints(payload));
   ipcMain.handle('products:create', async (_event, payload) => createProduct(payload));
+  ipcMain.handle('services:list', async () => listServices());
+  ipcMain.handle('services:create', async (_event, payload) => createService(payload));
   ipcMain.handle('products:delete', async (_event, payload) => deleteProduct(payload));
   ipcMain.handle('products:delete-permanent', async (_event, payload) =>
     deleteProductPermanently(payload)
