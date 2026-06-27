@@ -336,6 +336,7 @@ function App() {
   const [customerFormMode, setCustomerFormMode] = useState<'create' | 'edit'>('create');
   const [customerFormStatus, setCustomerFormStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [customerFormError, setCustomerFormError] = useState('');
+  const [customerModal, setCustomerModal] = useState<'customer' | 'visit' | 'edit' | 'redeem' | null>(null);
   const scanBuffer = useRef('');
   const scanTimer = useRef<number | null>(null);
   const navItems = [
@@ -825,6 +826,7 @@ function App() {
       });
       setNewCustomer({ name: '', phone: '', email: '', notes: '' });
       setNewCustomerStatus('saved');
+      setCustomerModal(null);
       await refreshData();
     } catch (error) {
       setNewCustomerStatus('error');
@@ -865,6 +867,7 @@ function App() {
       setCustomerMatches([]);
       setSelectedVisitCustomer(null);
       setNewVisitStatus('saved');
+      setCustomerModal(null);
       await refreshData();
     } catch (error) {
       setNewVisitStatus('error');
@@ -872,7 +875,11 @@ function App() {
     }
   };
 
-  const openCustomerForm = () => {
+  const closeCustomerModal = () => {
+    setCustomerModal(null);
+  };
+
+  const openAddCustomerModal = () => {
     setCustomerForm({
       name: '',
       phone: '',
@@ -887,6 +894,65 @@ function App() {
     setRedeemPoints('0');
     setRedeemStatus('idle');
     setRedeemError('');
+    setCustomerModal('customer');
+  };
+
+  const openVisitModal = () => {
+    const hasSelectedCustomer = Boolean(selectedCustomerId && customerProfile);
+    setNewVisit({
+      customerId: hasSelectedCustomer ? selectedCustomerId : 'walk-in',
+      serviceId: '',
+      serviceName: '',
+      amount: '0.00',
+      manualAmount: false,
+      notes: '',
+    });
+    setCustomerSearch(hasSelectedCustomer ? customerProfile!.customer.name : '');
+    setCustomerMatches([]);
+    setSelectedVisitCustomer(hasSelectedCustomer ? customerProfile!.customer : null);
+    setNewVisitStatus('idle');
+    setNewVisitError('');
+    setCustomerModal('visit');
+  };
+
+  const openEditCustomerModal = () => {
+    if (!customerProfile || !selectedCustomerId) return;
+    setCustomerForm({
+      name: customerProfile.customer.name,
+      phone: customerProfile.customer.phone ?? '',
+      email: customerProfile.customer.email ?? '',
+      notes: customerProfile.customer.notes ?? '',
+    });
+    setCustomerFormMode('edit');
+    setCustomerFormStatus('idle');
+    setCustomerFormError('');
+    setCustomerModal('edit');
+  };
+
+  const openRedeemModal = () => {
+    if (!customerProfile || !selectedCustomerId) return;
+    setRedeemPoints('0');
+    setRedeemStatus('idle');
+    setRedeemError('');
+    setCustomerModal('redeem');
+  };
+
+  const clearCustomerSelection = () => {
+    setSelectedCustomerId('');
+    setCustomerProfile(null);
+    setCustomerFormMode('create');
+    setCustomerForm({
+      name: '',
+      phone: '',
+      email: '',
+      notes: '',
+    });
+    setCustomerFormError('');
+    setCustomerFormStatus('idle');
+    setRedeemPoints('0');
+    setRedeemStatus('idle');
+    setRedeemError('');
+    setCustomerModal(null);
   };
 
   const saveCustomer = async (event: FormEvent<HTMLFormElement>) => {
@@ -923,6 +989,7 @@ function App() {
 
       setCustomerFormStatus('saved');
       setCustomerDirectoryRefreshToken((current) => current + 1);
+      setCustomerModal(null);
       await refreshData();
     } catch (error) {
       setCustomerFormStatus('error');
@@ -944,6 +1011,7 @@ function App() {
       });
       setRedeemPoints('0');
       setRedeemStatus('saved');
+      setCustomerModal(null);
       setCustomerProfile((current) =>
         current
           ? {
@@ -985,7 +1053,7 @@ function App() {
 
     try {
       await window.pos.deleteCustomer({ id: selectedCustomerId });
-      openCustomerForm();
+      clearCustomerSelection();
       setCustomerDirectoryQuery('');
       setCustomerDirectoryRefreshToken((current) => current + 1);
       await refreshData();
@@ -1110,231 +1178,34 @@ function App() {
                 <div className="dashboard-panel-head">
                   <div>
                     <p className="eyebrow">Quick actions</p>
-                    <h2>Add Customer / New Visit</h2>
+                    <h2>Customer center</h2>
                   </div>
                   <span className="pill pill-offline">Local first</span>
                 </div>
 
                 <div className="quick-actions-grid">
-                  <form className="mini-form" onSubmit={createNewCustomer}>
+                  <button
+                    className="mini-form mini-action-button"
+                    type="button"
+                    onClick={() => {
+                      setView('customers');
+                      openAddCustomerModal();
+                    }}
+                  >
                     <h3>Add Customer</h3>
-                    <div className="form-grid">
-                      <label>
-                        <span>Name</span>
-                        <input
-                          className="field"
-                          placeholder="Ayesha Khan"
-                          value={newCustomer.name}
-                          onChange={(event) => setNewCustomer((current) => ({ ...current, name: event.target.value }))}
-                          required
-                        />
-                      </label>
-                      <label>
-                        <span>Phone</span>
-                        <input
-                          className="field"
-                          placeholder="0300-1234567"
-                          value={newCustomer.phone}
-                          onChange={(event) => setNewCustomer((current) => ({ ...current, phone: event.target.value }))}
-                        />
-                      </label>
-                      <label className="full-width">
-                        <span>Email</span>
-                        <input
-                          className="field"
-                          placeholder="client@example.com"
-                          value={newCustomer.email}
-                          onChange={(event) => setNewCustomer((current) => ({ ...current, email: event.target.value }))}
-                        />
-                      </label>
-                      <label className="full-width">
-                        <span>Notes</span>
-                        <input
-                          className="field"
-                          placeholder="Preferred stylist, allergies, reminders"
-                          value={newCustomer.notes}
-                          onChange={(event) => setNewCustomer((current) => ({ ...current, notes: event.target.value }))}
-                        />
-                      </label>
-                    </div>
-                    <div className="form-footer">
-                      <button className="primary-button" type="submit" disabled={newCustomerStatus === 'saving'}>
-                        {newCustomerStatus === 'saving' ? 'Saving...' : 'Add Customer'}
-                      </button>
-                      <div className="form-message">
-                        {newCustomerError ? (
-                          <span className="error-text">{newCustomerError}</span>
-                        ) : newCustomerStatus === 'saved' ? (
-                          <span className="success-text">Customer saved.</span>
-                        ) : (
-                          <span className="muted">Store local customer profiles.</span>
-                        )}
-                      </div>
-                    </div>
-                  </form>
-
-                  <form className="mini-form" onSubmit={createNewVisit}>
+                    <span>Open a popup for customer details.</span>
+                  </button>
+                  <button
+                    className="mini-form mini-action-button"
+                    type="button"
+                    onClick={() => {
+                      setView('customers');
+                      openVisitModal();
+                    }}
+                  >
                     <h3>New Visit</h3>
-                    <div className="form-grid">
-                      <label>
-                        <span>Customer</span>
-                        <input
-                          className="field"
-                          placeholder="Search customer name or phone"
-                          value={customerSearch}
-                          onChange={(event) => {
-                            const value = event.target.value;
-                            setCustomerSearch(value);
-                            setSelectedVisitCustomer(null);
-                            setNewVisit((current) => ({ ...current, customerId: 'walk-in' }));
-                          }}
-                        />
-                      </label>
-                      <div className="customer-results full-width">
-                        <button
-                          type="button"
-                          className={`customer-result ${newVisit.customerId === 'walk-in' ? 'customer-result-selected' : ''}`}
-                          onClick={() => {
-                            setNewVisit((current) => ({ ...current, customerId: 'walk-in' }));
-                            setCustomerSearch('');
-                            setCustomerMatches([]);
-                            setSelectedVisitCustomer(null);
-                          }}
-                        >
-                          <strong>Walk-in</strong>
-                          <span>Use when the customer is not in the system yet.</span>
-                        </button>
-                        {customerSearchStatus === 'loading' ? <span className="muted">Searching customers...</span> : null}
-                        {customerMatches.map((customer) => (
-                          <button
-                            type="button"
-                            key={customer.id}
-                            className={`customer-result ${
-                              newVisit.customerId === customer.id ? 'customer-result-selected' : ''
-                            }`}
-                            onClick={() => {
-                              setNewVisit((current) => ({ ...current, customerId: customer.id }));
-                              setCustomerSearch(customer.name);
-                              setCustomerMatches([]);
-                              setSelectedVisitCustomer(customer);
-                            }}
-                          >
-                            <strong>{customer.name}</strong>
-                            <span>
-                              {customer.phone || 'No phone'}
-                              {customer.visitsCount ? ` · ${customer.visitsCount} visits` : ''}
-                            </span>
-                          </button>
-                        ))}
-                        {customerSearch && customerSearchStatus === 'idle' && customerMatches.length === 0 ? (
-                          <span className="muted">No matching customers found.</span>
-                        ) : null}
-                      </div>
-                      <label className="full-width">
-                        <span>Service / package</span>
-                        <select
-                          className="field"
-                          value={newVisit.serviceId}
-                          onChange={(event) => {
-                            const service = services.find((item) => item.id === event.target.value) ?? null;
-                            setNewVisit((current) => ({
-                              ...current,
-                              serviceId: service?.id ?? '',
-                              serviceName: service?.name ?? '',
-                              amount: service ? service.price.toFixed(2) : current.amount,
-                              manualAmount: false,
-                            }));
-                          }}
-                          required
-                        >
-                          <option value="" disabled>
-                            Select a service package
-                          </option>
-                          {services.map((service) => (
-                            <option key={service.id} value={service.id}>
-                              {service.code} · {service.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      {selectedService ? (
-                        <div className="customer-results full-width">
-                          <div className="customer-result customer-result-selected">
-                            <div>
-                              <strong>{selectedService.name}</strong>
-                              <span>
-                                {selectedService.code} · {selectedService.description}
-                              </span>
-                            </div>
-                            <div className="right">
-                              <strong>{money.format(selectedService.price)}</strong>
-                              <span>default price</span>
-                            </div>
-                          </div>
-                        </div>
-                      ) : (
-                        <span className="muted">Choose a service package to auto-calculate the amount.</span>
-                      )}
-                      <label className="checkbox-row full-width">
-                        <input
-                          type="checkbox"
-                          checked={newVisit.manualAmount}
-                          onChange={(event) =>
-                            setNewVisit((current) => ({
-                              ...current,
-                              manualAmount: event.target.checked,
-                              amount: event.target.checked
-                                ? current.amount
-                                : selectedService
-                                  ? selectedService.price.toFixed(2)
-                                  : current.amount,
-                            }))
-                          }
-                          disabled={!selectedService}
-                        />
-                        <span>Manual price override</span>
-                      </label>
-                      <label>
-                        <span>Amount</span>
-                        <input
-                          className="field"
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          placeholder="1500"
-                          value={newVisit.manualAmount && selectedService ? newVisit.amount : selectedService?.price.toFixed(2) ?? newVisit.amount}
-                          onChange={(event) =>
-                            setNewVisit((current) => ({ ...current, amount: event.target.value, manualAmount: true }))
-                          }
-                          required
-                          readOnly={Boolean(selectedService) && !newVisit.manualAmount}
-                        />
-                      </label>
-                      <label className="full-width">
-                        <span>Notes</span>
-                        <input
-                          className="field"
-                          placeholder="Preferred stylist, follow-up, etc."
-                          value={newVisit.notes}
-                          onChange={(event) => setNewVisit((current) => ({ ...current, notes: event.target.value }))}
-                        />
-                      </label>
-                    </div>
-                    <div className="form-footer">
-                      <button className="primary-button" type="submit" disabled={newVisitStatus === 'saving'}>
-                        {newVisitStatus === 'saving' ? 'Saving...' : 'New Visit'}
-                      </button>
-                      <div className="form-message">
-                        {newVisitError ? (
-                          <span className="error-text">{newVisitError}</span>
-                        ) : newVisitStatus === 'saved' ? (
-                          <span className="success-text">Visit logged.</span>
-                        ) : (
-                          <span className="muted">Earn loyalty points on paid visits.</span>
-                        )}
-                      </div>
-                    </div>
-                  </form>
+                    <span>Select a customer and service in a popup.</span>
+                  </button>
                 </div>
               </section>
 
@@ -1373,14 +1244,14 @@ function App() {
           </section>
         ) : view === 'customers' ? (
           <section className="customer-management">
-            <div className="customer-management-layout">
+            <div className={`customer-management-layout ${customerProfile ? 'customer-management-layout-split' : 'customer-management-layout-full'}`}>
               <aside className="panel customer-directory">
                 <div className="customer-directory-head">
                   <div>
                     <p className="eyebrow">Customer management</p>
                     <h2>Search by name or phone</h2>
                   </div>
-                  <button className="ghost-button ghost-button-small" onClick={openCustomerForm}>
+                  <button className="ghost-button ghost-button-small" onClick={openAddCustomerModal}>
                     New customer
                   </button>
                 </div>
@@ -1417,87 +1288,33 @@ function App() {
                 </div>
               </aside>
 
-              <section className="panel customer-profile-panel">
-                <div className="dashboard-panel-head">
-                  <div>
-                    <p className="eyebrow">{customerFormMode === 'edit' ? 'Edit customer' : 'Add customer'}</p>
-                    <h2>
-                      {customerFormMode === 'create'
-                        ? 'New customer'
-                        : customerProfile?.customer.name || 'Customer profile'}
-                    </h2>
-                  </div>
-                  <span className={`pill ${customerProfile?.customer.isActive === 0 ? 'pill-offline' : 'pill-online'}`}>
-                    {customerProfile?.customer.isActive === 0 ? 'Deleted' : customerProfile ? 'Active' : 'Ready'}
-                  </span>
-                </div>
-
-                <form className="customer-profile-form" onSubmit={saveCustomer}>
-                  <div className="form-grid">
-                    <label>
-                      <span>Name</span>
-                      <input
-                        className="field"
-                        placeholder="Ayesha Khan"
-                        value={customerForm.name}
-                        onChange={(event) => setCustomerForm((current) => ({ ...current, name: event.target.value }))}
-                        required
-                      />
-                    </label>
-                    <label>
-                      <span>Phone number</span>
-                      <input
-                        className="field"
-                        placeholder="0300-1234567"
-                        value={customerForm.phone}
-                        onChange={(event) => setCustomerForm((current) => ({ ...current, phone: event.target.value }))}
-                      />
-                    </label>
-                    <label>
-                      <span>Email</span>
-                      <input
-                        className="field"
-                        placeholder="client@example.com"
-                        value={customerForm.email}
-                        onChange={(event) => setCustomerForm((current) => ({ ...current, email: event.target.value }))}
-                      />
-                    </label>
-                    <label>
-                      <span>Notes</span>
-                      <input
-                        className="field"
-                        placeholder="Preferred stylist, allergies, reminders"
-                        value={customerForm.notes}
-                        onChange={(event) => setCustomerForm((current) => ({ ...current, notes: event.target.value }))}
-                      />
-                    </label>
-                  </div>
-
+              {customerProfile ? (
+                <section className="panel customer-profile-panel">
                   <div className="customer-profile-stats">
                     <div className="metric-card">
                       <span>Visits</span>
-                      <strong>{customerProfile?.customer.visitsCount ?? '...'}</strong>
+                      <strong>{customerProfile.customer.visitsCount}</strong>
                       <small>Total visits</small>
                     </div>
                     <div className="metric-card">
                       <span>Points earned</span>
-                      <strong>{customerProfile?.pointsEarnedTotal ?? '...'}</strong>
+                      <strong>{customerProfile.pointsEarnedTotal}</strong>
                       <small>From completed visits</small>
                     </div>
                     <div className="metric-card">
                       <span>Points redeemed</span>
-                      <strong>{customerProfile?.pointsRedeemedTotal ?? '...'}</strong>
+                      <strong>{customerProfile.pointsRedeemedTotal}</strong>
                       <small>Loyalty used</small>
                     </div>
                     <div className="metric-card">
                       <span>Loyalty balance</span>
-                      <strong>{customerProfile?.customer.loyaltyPoints ?? '...'}</strong>
+                      <strong>{customerProfile.customer.loyaltyPoints}</strong>
                       <small>Available points</small>
                     </div>
                     <div className="metric-card">
                       <span>Last visit</span>
                       <strong>
-                        {customerProfile?.customer.lastVisitAt
+                        {customerProfile.customer.lastVisitAt
                           ? new Date(customerProfile.customer.lastVisitAt).toLocaleDateString()
                           : '—'}
                       </strong>
@@ -1505,166 +1322,111 @@ function App() {
                     </div>
                   </div>
 
-                  <div className="new-item-form">
-                    <div className="form-head">
-                      <div>
-                        <p className="eyebrow">Redeem loyalty</p>
-                        <h3>Use customer points</h3>
+                  <div className="customer-profile-grid">
+                    <section className="customer-profile-card">
+                      <div className="inventory-section-head">
+                        <div>
+                          <h3>Services taken</h3>
+                          <span className="muted">Most requested treatments</span>
+                        </div>
                       </div>
-                      <span className={`pill ${redeemStatus === 'saved' ? 'pill-online' : 'pill-offline'}`}>
-                        {redeemStatus === 'saved' ? 'Saved' : 'Local only'}
-                      </span>
-                    </div>
-                    <div className="form-grid">
-                      <label>
-                        <span>Points to redeem</span>
-                        <input
-                          className="field"
-                          type="number"
-                          min="1"
-                          step="1"
-                          value={redeemPoints}
-                          onChange={(event) => setRedeemPoints(event.target.value)}
-                          required
-                        />
-                      </label>
-                    </div>
-                    <div className="form-footer">
-                      <button className="primary-button" type="button" onClick={() => void redeemCustomerPoints()} disabled={redeemStatus === 'saving'}>
-                        {redeemStatus === 'saving' ? 'Saving...' : 'Redeem points'}
-                      </button>
-                      <div className="form-message">
-                        {redeemError ? (
-                          <span className="error-text">{redeemError}</span>
-                        ) : redeemStatus === 'saved' ? (
-                          <span className="success-text">Points redeemed.</span>
+                      <div className="customer-summary-list">
+                        {customerProfile.favoriteServices.length > 0 ? (
+                          customerProfile.favoriteServices.map((service) => (
+                            <div className="customer-summary-item" key={service.serviceName}>
+                              <div>
+                                <strong>{service.serviceName}</strong>
+                                <span>{service.visitCount} visits</span>
+                              </div>
+                              <div className="right">
+                                <strong>{money.format(service.totalAmount)}</strong>
+                                <span>spent</span>
+                              </div>
+                            </div>
+                          ))
                         ) : (
-                          <span className="muted">Subtracts from the customer balance and logs the transaction.</span>
+                          <span className="muted">No visit history yet.</span>
                         )}
                       </div>
-                    </div>
+                    </section>
+
+                    <section className="customer-profile-card">
+                      <div className="inventory-section-head">
+                        <div>
+                          <h3>Transaction history</h3>
+                          <span className="muted">Latest salon visits</span>
+                        </div>
+                      </div>
+                      <div className="customer-history-list">
+                        {customerProfile.recentVisits.length > 0 ? (
+                          customerProfile.recentVisits.map((visit) => (
+                            <div className="customer-history-item" key={visit.id}>
+                              <div>
+                                <strong>{visit.serviceName}</strong>
+                                <span>
+                                  {visit.serviceCode ? `${visit.serviceCode} · ` : ''}
+                                  {visit.priceOverride ? 'manual price · ' : ''}
+                                  {visit.notes || 'No notes'}
+                                </span>
+                              </div>
+                              <div className="right">
+                                <strong>{money.format(visit.amount)}</strong>
+                                <span>
+                                  {new Date(visit.createdAt).toLocaleDateString()} · {visit.pointsEarned} points
+                                </span>
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <span className="muted">No visits recorded for this customer.</span>
+                        )}
+                      </div>
+                    </section>
+
+                    <section className="customer-profile-card">
+                      <div className="inventory-section-head">
+                        <div>
+                          <h3>Loyalty activity</h3>
+                          <span className="muted">Points earned and redeemed</span>
+                        </div>
+                      </div>
+                      <div className="customer-history-list">
+                        {customerProfile.loyaltyTransactions.length > 0 ? (
+                          customerProfile.loyaltyTransactions.map((entry) => (
+                            <div className="customer-history-item" key={entry.id}>
+                              <div>
+                                <strong>{entry.transactionType === 'earn' ? 'Points earned' : 'Points redeemed'}</strong>
+                                <span>{entry.notes || 'No notes'}</span>
+                              </div>
+                              <div className="right">
+                                <strong>{entry.transactionType === 'earn' ? '+' : '-'}{entry.points}</strong>
+                                <span>{new Date(entry.createdAt).toLocaleDateString()}</span>
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <span className="muted">No loyalty transactions yet.</span>
+                        )}
+                      </div>
+                    </section>
                   </div>
 
-                  <div className="form-footer">
-                    <button className="primary-button" type="submit" disabled={customerFormStatus === 'saving'}>
-                      {customerFormStatus === 'saving'
-                        ? 'Saving...'
-                        : customerFormMode === 'edit'
-                          ? 'Save changes'
-                          : 'Add customer'}
+                  <div className="customer-profile-actions">
+                    <button className="ghost-button" onClick={openEditCustomerModal}>
+                      Edit customer
                     </button>
-                    <div className="form-message">
-                      {customerFormError ? (
-                        <span className="error-text">{customerFormError}</span>
-                      ) : customerFormStatus === 'saved' ? (
-                        <span className="success-text">Customer saved.</span>
-                      ) : (
-                        <span className="muted">
-                          {customerFormMode === 'edit' ? 'Update profile details and notes.' : 'Create a new customer profile.'}
-                        </span>
-                      )}
-                    </div>
+                    <button className="ghost-button" onClick={openRedeemModal}>
+                      Redeem loyalty
+                    </button>
+                    <button className="danger-button" onClick={removeCustomer} disabled={customerProfile.customer.isActive === 0}>
+                      Delete customer
+                    </button>
+                    <button className="ghost-button" onClick={clearCustomerSelection}>
+                      Clear selection
+                    </button>
                   </div>
-                </form>
-
-                <div className="customer-profile-grid">
-                  <section className="customer-profile-card">
-                    <div className="inventory-section-head">
-                      <div>
-                        <h3>Services taken</h3>
-                        <span className="muted">Most requested treatments</span>
-                      </div>
-                    </div>
-                    <div className="customer-summary-list">
-                      {(customerProfile?.favoriteServices ?? []).length > 0 ? (
-                        customerProfile!.favoriteServices.map((service) => (
-                          <div className="customer-summary-item" key={service.serviceName}>
-                            <div>
-                              <strong>{service.serviceName}</strong>
-                              <span>{service.visitCount} visits</span>
-                            </div>
-                            <div className="right">
-                              <strong>{money.format(service.totalAmount)}</strong>
-                              <span>spent</span>
-                            </div>
-                          </div>
-                        ))
-                      ) : (
-                        <span className="muted">No visit history yet.</span>
-                      )}
-                    </div>
-                  </section>
-
-                  <section className="customer-profile-card">
-                    <div className="inventory-section-head">
-                      <div>
-                        <h3>Transaction history</h3>
-                        <span className="muted">Latest salon visits</span>
-                      </div>
-                    </div>
-                    <div className="customer-history-list">
-                      {(customerProfile?.recentVisits ?? []).length > 0 ? (
-                        customerProfile!.recentVisits.map((visit) => (
-                          <div className="customer-history-item" key={visit.id}>
-                            <div>
-                              <strong>{visit.serviceName}</strong>
-                              <span>
-                                {visit.serviceCode ? `${visit.serviceCode} · ` : ''}
-                                {visit.priceOverride ? 'manual price · ' : ''}
-                                {visit.notes || 'No notes'}
-                              </span>
-                            </div>
-                            <div className="right">
-                              <strong>{money.format(visit.amount)}</strong>
-                              <span>
-                                {new Date(visit.createdAt).toLocaleDateString()} · {visit.pointsEarned} points
-                              </span>
-                            </div>
-                          </div>
-                        ))
-                      ) : (
-                        <span className="muted">No visits recorded for this customer.</span>
-                      )}
-                    </div>
-                  </section>
-
-                  <section className="customer-profile-card">
-                    <div className="inventory-section-head">
-                      <div>
-                        <h3>Loyalty activity</h3>
-                        <span className="muted">Points earned and redeemed</span>
-                      </div>
-                    </div>
-                    <div className="customer-history-list">
-                      {(customerProfile?.loyaltyTransactions ?? []).length > 0 ? (
-                        customerProfile!.loyaltyTransactions.map((entry) => (
-                          <div className="customer-history-item" key={entry.id}>
-                            <div>
-                              <strong>{entry.transactionType === 'earn' ? 'Points earned' : 'Points redeemed'}</strong>
-                              <span>{entry.notes || 'No notes'}</span>
-                            </div>
-                            <div className="right">
-                              <strong>{entry.transactionType === 'earn' ? '+' : '-'}{entry.points}</strong>
-                              <span>{new Date(entry.createdAt).toLocaleDateString()}</span>
-                            </div>
-                          </div>
-                        ))
-                      ) : (
-                        <span className="muted">No loyalty transactions yet.</span>
-                      )}
-                    </div>
-                  </section>
-                </div>
-
-                <div className="customer-profile-actions">
-                  <button className="danger-button" onClick={removeCustomer} disabled={!customerProfile || customerProfile.customer.isActive === 0}>
-                    Delete customer
-                  </button>
-                  <button className="ghost-button" onClick={openCustomerForm}>
-                    Clear selection
-                  </button>
-                </div>
-              </section>
+                </section>
+              ) : null}
             </div>
           </section>
         ) : view === 'billing' || view === 'pos' ? (
@@ -2568,6 +2330,349 @@ function App() {
             </div>
           </section>
         )}
+
+        {customerModal ? (
+          <div className="modal-backdrop" onClick={closeCustomerModal} role="presentation">
+            <section className="modal-card" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true">
+              <div className="dashboard-panel-head">
+                <div>
+                  <p className="eyebrow">
+                    {customerModal === 'customer'
+                      ? 'Add customer'
+                      : customerModal === 'visit'
+                        ? 'New visit'
+                        : customerModal === 'edit'
+                          ? 'Edit customer'
+                          : 'Redeem loyalty'}
+                  </p>
+                  <h2>
+                    {customerModal === 'customer'
+                      ? 'Create a customer profile'
+                      : customerModal === 'visit'
+                        ? 'Log a salon visit'
+                        : customerModal === 'edit'
+                          ? customerProfile?.customer.name || 'Update customer'
+                          : 'Spend loyalty points'}
+                  </h2>
+                </div>
+                <button className="ghost-button ghost-button-small" type="button" onClick={closeCustomerModal}>
+                  Close
+                </button>
+              </div>
+
+              {customerModal === 'customer' ? (
+                <form className="new-item-form" onSubmit={createNewCustomer}>
+                  <div className="form-grid">
+                    <label>
+                      <span>Name</span>
+                      <input
+                        className="field"
+                        placeholder="Ayesha Khan"
+                        value={newCustomer.name}
+                        onChange={(event) => setNewCustomer((current) => ({ ...current, name: event.target.value }))}
+                        required
+                      />
+                    </label>
+                    <label>
+                      <span>Phone</span>
+                      <input
+                        className="field"
+                        placeholder="0300-1234567"
+                        value={newCustomer.phone}
+                        onChange={(event) => setNewCustomer((current) => ({ ...current, phone: event.target.value }))}
+                      />
+                    </label>
+                    <label className="full-width">
+                      <span>Email</span>
+                      <input
+                        className="field"
+                        placeholder="client@example.com"
+                        value={newCustomer.email}
+                        onChange={(event) => setNewCustomer((current) => ({ ...current, email: event.target.value }))}
+                      />
+                    </label>
+                    <label className="full-width">
+                      <span>Notes</span>
+                      <input
+                        className="field"
+                        placeholder="Preferred stylist, allergies, reminders"
+                        value={newCustomer.notes}
+                        onChange={(event) => setNewCustomer((current) => ({ ...current, notes: event.target.value }))}
+                      />
+                    </label>
+                  </div>
+                  <div className="form-footer">
+                    <button className="primary-button" type="submit" disabled={newCustomerStatus === 'saving'}>
+                      {newCustomerStatus === 'saving' ? 'Saving...' : 'Add customer'}
+                    </button>
+                    <div className="form-message">
+                      {newCustomerError ? (
+                        <span className="error-text">{newCustomerError}</span>
+                      ) : newCustomerStatus === 'saved' ? (
+                        <span className="success-text">Customer saved.</span>
+                      ) : (
+                        <span className="muted">Store local customer profiles.</span>
+                      )}
+                    </div>
+                  </div>
+                </form>
+              ) : customerModal === 'visit' ? (
+                <form className="new-item-form" onSubmit={createNewVisit}>
+                  <div className="form-grid">
+                    <label>
+                      <span>Customer</span>
+                      <input
+                        className="field"
+                        placeholder="Search customer name or phone"
+                        value={customerSearch}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          setCustomerSearch(value);
+                          setSelectedVisitCustomer(null);
+                          setNewVisit((current) => ({ ...current, customerId: 'walk-in' }));
+                        }}
+                      />
+                    </label>
+                    <div className="customer-results full-width">
+                      <button
+                        type="button"
+                        className={`customer-result ${newVisit.customerId === 'walk-in' ? 'customer-result-selected' : ''}`}
+                        onClick={() => {
+                          setNewVisit((current) => ({ ...current, customerId: 'walk-in' }));
+                          setCustomerSearch('');
+                          setCustomerMatches([]);
+                          setSelectedVisitCustomer(null);
+                        }}
+                      >
+                        <strong>Walk-in</strong>
+                        <span>Use when the customer is not in the system yet.</span>
+                      </button>
+                      {customerSearchStatus === 'loading' ? <span className="muted">Searching customers...</span> : null}
+                      {customerMatches.map((customer) => (
+                        <button
+                          type="button"
+                          key={customer.id}
+                          className={`customer-result ${newVisit.customerId === customer.id ? 'customer-result-selected' : ''}`}
+                          onClick={() => {
+                            setNewVisit((current) => ({ ...current, customerId: customer.id }));
+                            setCustomerSearch(customer.name);
+                            setCustomerMatches([]);
+                            setSelectedVisitCustomer(customer);
+                          }}
+                        >
+                          <strong>{customer.name}</strong>
+                          <span>
+                            {customer.phone || 'No phone'}
+                            {customer.visitsCount ? ` · ${customer.visitsCount} visits` : ''}
+                          </span>
+                        </button>
+                      ))}
+                      {customerSearch && customerSearchStatus === 'idle' && customerMatches.length === 0 ? (
+                        <span className="muted">No matching customers found.</span>
+                      ) : null}
+                    </div>
+                    <label className="full-width">
+                      <span>Service / package</span>
+                      <select
+                        className="field"
+                        value={newVisit.serviceId}
+                        onChange={(event) => {
+                          const service = services.find((item) => item.id === event.target.value) ?? null;
+                          setNewVisit((current) => ({
+                            ...current,
+                            serviceId: service?.id ?? '',
+                            serviceName: service?.name ?? '',
+                            amount: service ? service.price.toFixed(2) : current.amount,
+                            manualAmount: false,
+                          }));
+                        }}
+                        required
+                      >
+                        <option value="" disabled>
+                          Select a service package
+                        </option>
+                        {services.map((service) => (
+                          <option key={service.id} value={service.id}>
+                            {service.code} · {service.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {selectedService ? (
+                      <div className="customer-results full-width">
+                        <div className="customer-result customer-result-selected">
+                          <div>
+                            <strong>{selectedService.name}</strong>
+                            <span>
+                              {selectedService.code} · {selectedService.description}
+                            </span>
+                          </div>
+                          <div className="right">
+                            <strong>{money.format(selectedService.price)}</strong>
+                            <span>default price</span>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <span className="muted">Choose a service package to auto-calculate the amount.</span>
+                    )}
+                    <label className="checkbox-row full-width">
+                      <input
+                        type="checkbox"
+                        checked={newVisit.manualAmount}
+                        onChange={(event) =>
+                          setNewVisit((current) => ({
+                            ...current,
+                            manualAmount: event.target.checked,
+                            amount: event.target.checked
+                              ? current.amount
+                              : selectedService
+                                ? selectedService.price.toFixed(2)
+                                : current.amount,
+                          }))
+                        }
+                        disabled={!selectedService}
+                      />
+                      <span>Manual price override</span>
+                    </label>
+                    <label>
+                      <span>Amount</span>
+                      <input
+                        className="field"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        placeholder="1500"
+                        value={newVisit.manualAmount && selectedService ? newVisit.amount : selectedService?.price.toFixed(2) ?? newVisit.amount}
+                        onChange={(event) =>
+                          setNewVisit((current) => ({ ...current, amount: event.target.value, manualAmount: true }))
+                        }
+                        required
+                        readOnly={Boolean(selectedService) && !newVisit.manualAmount}
+                      />
+                    </label>
+                    <label className="full-width">
+                      <span>Notes</span>
+                      <input
+                        className="field"
+                        placeholder="Preferred stylist, follow-up, etc."
+                        value={newVisit.notes}
+                        onChange={(event) => setNewVisit((current) => ({ ...current, notes: event.target.value }))}
+                      />
+                    </label>
+                  </div>
+                  <div className="form-footer">
+                    <button className="primary-button" type="submit" disabled={newVisitStatus === 'saving'}>
+                      {newVisitStatus === 'saving' ? 'Saving...' : 'New visit'}
+                    </button>
+                    <div className="form-message">
+                      {newVisitError ? (
+                        <span className="error-text">{newVisitError}</span>
+                      ) : newVisitStatus === 'saved' ? (
+                        <span className="success-text">Visit logged.</span>
+                      ) : (
+                        <span className="muted">Earn loyalty points on paid visits.</span>
+                      )}
+                    </div>
+                  </div>
+                </form>
+              ) : customerModal === 'edit' ? (
+                <form className="new-item-form" onSubmit={saveCustomer}>
+                  <div className="form-grid">
+                    <label>
+                      <span>Name</span>
+                      <input
+                        className="field"
+                        placeholder="Ayesha Khan"
+                        value={customerForm.name}
+                        onChange={(event) => setCustomerForm((current) => ({ ...current, name: event.target.value }))}
+                        required
+                      />
+                    </label>
+                    <label>
+                      <span>Phone number</span>
+                      <input
+                        className="field"
+                        placeholder="0300-1234567"
+                        value={customerForm.phone}
+                        onChange={(event) => setCustomerForm((current) => ({ ...current, phone: event.target.value }))}
+                      />
+                    </label>
+                    <label>
+                      <span>Email</span>
+                      <input
+                        className="field"
+                        placeholder="client@example.com"
+                        value={customerForm.email}
+                        onChange={(event) => setCustomerForm((current) => ({ ...current, email: event.target.value }))}
+                      />
+                    </label>
+                    <label>
+                      <span>Notes</span>
+                      <input
+                        className="field"
+                        placeholder="Preferred stylist, allergies, reminders"
+                        value={customerForm.notes}
+                        onChange={(event) => setCustomerForm((current) => ({ ...current, notes: event.target.value }))}
+                      />
+                    </label>
+                  </div>
+                  <div className="form-footer">
+                    <button className="primary-button" type="submit" disabled={customerFormStatus === 'saving'}>
+                      {customerFormStatus === 'saving' ? 'Saving...' : 'Save changes'}
+                    </button>
+                    <div className="form-message">
+                      {customerFormError ? (
+                        <span className="error-text">{customerFormError}</span>
+                      ) : customerFormStatus === 'saved' ? (
+                        <span className="success-text">Customer saved.</span>
+                      ) : (
+                        <span className="muted">Update profile details and notes.</span>
+                      )}
+                    </div>
+                  </div>
+                </form>
+              ) : (
+                <form
+                  className="new-item-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void redeemCustomerPoints();
+                  }}
+                >
+                  <div className="form-grid">
+                    <label>
+                      <span>Points to redeem</span>
+                      <input
+                        className="field"
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={redeemPoints}
+                        onChange={(event) => setRedeemPoints(event.target.value)}
+                        required
+                      />
+                    </label>
+                  </div>
+                  <div className="form-footer">
+                    <button className="primary-button" type="submit" disabled={redeemStatus === 'saving'}>
+                      {redeemStatus === 'saving' ? 'Saving...' : 'Redeem points'}
+                    </button>
+                    <div className="form-message">
+                      {redeemError ? (
+                        <span className="error-text">{redeemError}</span>
+                      ) : redeemStatus === 'saved' ? (
+                        <span className="success-text">Points redeemed.</span>
+                      ) : (
+                        <span className="muted">Subtracts from the customer balance and logs the transaction.</span>
+                      )}
+                    </div>
+                  </div>
+                </form>
+              )}
+            </section>
+          </div>
+        ) : null}
       </main>
     </div>
   );

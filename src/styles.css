@@ -27,6 +27,7 @@ body,
 
 body {
   color: var(--text);
+  line-height: 1.5;
   background:
     radial-gradient(circle at top left, rgba(102, 209, 255, 0.18), transparent 30%),
     radial-gradient(circle at top right, rgba(247, 178, 103, 0.12), transparent 24%),
@@ -84,6 +85,17 @@ input {
   display: grid;
   gap: 12px;
   margin: 4px 0 18px;
+}
+
+.sidebar-brand {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.sidebar-brand-copy {
+  display: none;
 }
 
 .sidebar-nav-button {
@@ -147,7 +159,7 @@ input {
 }
 
 .eyebrow {
-  margin: 0 0 4px;
+  margin: 0 0 6px;
   text-transform: uppercase;
   letter-spacing: 0.16em;
   color: var(--muted);
@@ -161,6 +173,7 @@ input {
 .product-card h3 {
   font-family: "Space Grotesk", sans-serif;
   margin: 0;
+  line-height: 1.12;
 }
 
 .status-card,
@@ -219,7 +232,7 @@ input {
   margin-top: 16px;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 16px;
 }
 
 .status-grid div {
@@ -300,7 +313,7 @@ input {
 .dashboard-metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
+  gap: 18px;
 }
 
 .metric-card {
@@ -333,7 +346,7 @@ input {
 .dashboard-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
-  gap: 18px;
+  gap: 22px;
 }
 
 .dashboard-panel {
@@ -350,13 +363,13 @@ input {
 
 .dashboard-panel-head > div {
   display: grid;
-  gap: 4px;
+  gap: 6px;
 }
 
 .quick-actions-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  gap: 18px;
 }
 
 .mini-form {
@@ -374,6 +387,41 @@ input {
   font-size: 1rem;
 }
 
+.mini-action-button {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.mini-action-button span {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(3, 8, 15, 0.62);
+  backdrop-filter: blur(6px);
+}
+
+.modal-card {
+  width: min(920px, 100%);
+  max-height: min(88vh, 920px);
+  overflow: auto;
+  padding: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 28px;
+  background: linear-gradient(180deg, rgba(12, 24, 41, 0.98), rgba(8, 15, 26, 0.98));
+  box-shadow: var(--shadow);
+}
+
 .full-width {
   grid-column: 1 / -1;
 }
@@ -388,8 +436,15 @@ input {
 
 .customer-management-layout {
   display: grid;
+  gap: 22px;
+}
+
+.customer-management-layout-full {
+  grid-template-columns: 1fr;
+}
+
+.customer-management-layout-split {
   grid-template-columns: minmax(0, 360px) minmax(0, 1fr);
-  gap: 18px;
 }
 
 .customer-directory,
@@ -412,7 +467,7 @@ input {
 
 .customer-directory-head > div {
   display: grid;
-  gap: 4px;
+  gap: 6px;
 }
 
 .customer-search {
@@ -422,7 +477,7 @@ input {
 
 .customer-directory-list {
   display: grid;
-  gap: 10px;
+  gap: 14px;
   max-height: calc(100vh - 260px);
   overflow: auto;
 }
@@ -457,12 +512,12 @@ input {
 
 .customer-profile-panel {
   display: grid;
-  gap: 16px;
+  gap: 18px;
 }
 
 .customer-profile-form {
   display: grid;
-  gap: 16px;
+  gap: 18px;
   padding: 16px;
   border-radius: 22px;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -472,13 +527,13 @@ input {
 .customer-profile-stats {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  gap: 16px;
 }
 
 .customer-profile-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 16px;
 }
 
 .customer-profile-card {
@@ -491,7 +546,7 @@ input {
 .customer-summary-list,
 .customer-history-list {
   display: grid;
-  gap: 10px;
+  gap: 14px;
   margin-top: 12px;
 }
 
@@ -551,7 +606,7 @@ input {
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 16px;
 }
 
 .checkbox-row {
@@ -589,13 +644,13 @@ input {
 
 .customer-results {
   display: grid;
-  gap: 10px;
+  gap: 14px;
   padding-top: 2px;
 }
 
 .customer-result {
   display: grid;
-  gap: 4px;
+  gap: 6px;
   width: 100%;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px;
@@ -639,7 +694,7 @@ input {
 
 .list {
   display: grid;
-  gap: 10px;
+  gap: 14px;
   margin-top: 14px;
 }
 
@@ -747,7 +802,7 @@ input {
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 390px;
-  gap: 18px;
+  gap: 22px;
 }
 
 .inventory-view {
@@ -764,7 +819,7 @@ input {
 
 .inventory-list {
   display: grid;
-  gap: 12px;
+  gap: 16px;
 }
 
 .inventory-table-wrap {
@@ -828,7 +883,7 @@ input {
 
 .inventory-name-cell {
   display: grid;
-  gap: 4px;
+  gap: 6px;
 }
 
 .inventory-name-cell span {
@@ -896,7 +951,7 @@ input {
 
 .inventory-section-head > div {
   display: grid;
-  gap: 4px;
+  gap: 6px;
 }
 
 .inventory-section-head h3 {
@@ -970,7 +1025,7 @@ input {
 .product-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
+  gap: 18px;
 }
 
 .product-card {
@@ -1184,6 +1239,16 @@ input {
   .customer-profile-actions {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .modal-backdrop {
+    padding: 12px;
+  }
+
+  .modal-card {
+    max-height: calc(100vh - 24px);
+    padding: 18px;
+    border-radius: 22px;
   }
 }
 
