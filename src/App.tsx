@@ -172,6 +172,62 @@ type SettingsSnapshot = {
   };
 };
 
+function DashboardIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 4h7v7H4V4Zm9 0h7v4h-7V4ZM4 13h7v7H4v-7Zm9 5v-9h7v9h-7Z" />
+    </svg>
+  );
+}
+
+function CustomersIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M16 11a4 4 0 1 0-4-4 4 4 0 0 0 4 4ZM8 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Zm8 2c-3.31 0-6 2.24-6 5v1h12v-1c0-2.76-2.69-5-6-5ZM8 14c-2.76 0-5 1.79-5 4v2h4v-1c0-1.52.55-2.9 1.46-4.03A6.87 6.87 0 0 0 8 14Z" />
+    </svg>
+  );
+}
+
+function BillingIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M7 3h10a2 2 0 0 1 2 2v16l-7-3-7 3V5a2 2 0 0 1 2-2Zm2 5h6V6H9v2Zm0 4h6v-2H9v2Z" />
+    </svg>
+  );
+}
+
+function ServicesIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="m21 7-4-4-3 3-4.5 4.5a3.75 3.75 0 0 0 0 5.3l-.5.5-2.5-2.5-2 2 3 3-.75.75a1 1 0 0 0 0 1.41l1.5 1.5a1 1 0 0 0 1.41 0L15.5 16l3 3 2-2-2.5-2.5.5-.5a3.75 3.75 0 0 0 5.3 0L21 11V7Z" />
+    </svg>
+  );
+}
+
+function ReportsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M5 3h2v18H5V3Zm6 6h2v12h-2V9Zm6-4h2v16h-2V5Z" />
+    </svg>
+  );
+}
+
+function InventoryIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="m4 7.5 8-4.5 8 4.5V16.5l-8 4.5-8-4.5V7.5Zm8-2.8-5.5 3.1 5.5 3 5.5-3-5.5-3.1ZM6 9.9v5.3l5 2.8v-5.3L6 9.9Zm12 0-5 2.8V18l5-2.8V9.9Z" />
+    </svg>
+  );
+}
+
+function SettingsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M19.14 12.94c.04-.31.06-.62.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.28 7.28 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 1h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.58.23-1.12.54-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 7.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.62-.06.94s.02.63.06.94L2.83 13.2a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.51.4 1.05.71 1.63.94l.36 2.54a.5.5 0 0 0 .49.42h3.8a.5.5 0 0 0 .49-.42l.36-2.54c.58-.23 1.12-.54 1.63-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5Z" />
+    </svg>
+  );
+}
+
 const money = new Intl.NumberFormat('en-PK', {
   style: 'currency',
   currency: 'PKR',
@@ -282,6 +338,15 @@ function App() {
   const [customerFormError, setCustomerFormError] = useState('');
   const scanBuffer = useRef('');
   const scanTimer = useRef<number | null>(null);
+  const navItems = [
+    { key: 'dashboard', label: 'Dashboard', icon: <DashboardIcon /> },
+    { key: 'customers', label: 'Customers', icon: <CustomersIcon /> },
+    { key: 'billing', label: 'Billing', icon: <BillingIcon /> },
+    { key: 'services', label: 'Services', icon: <ServicesIcon /> },
+    { key: 'reports', label: 'Reports', icon: <ReportsIcon /> },
+    { key: 'inventory', label: 'Inventory', icon: <InventoryIcon /> },
+    { key: 'settings', label: 'Settings', icon: <SettingsIcon /> },
+  ] as const;
   const selectedService = useMemo(
     () => services.find((service) => service.id === newVisit.serviceId) ?? null,
     [newVisit.serviceId, services]
@@ -932,83 +997,30 @@ function App() {
 
   return (
     <div className="shell">
-      <aside className="sidebar">
-        <div className="brand">
+      <aside className="sidebar" aria-label="Main navigation">
+        <div className="sidebar-brand">
           <div className="brand-mark">OP</div>
-          <div>
+          <div className="sidebar-brand-copy">
             <p className="eyebrow">{settings?.salonInfo.name ?? 'Offline POS'}</p>
-            <h1>{settings?.salonInfo.tagline ?? 'Front Counter'}</h1>
           </div>
         </div>
 
-        <div className="status-card">
-          <div className="status-row">
-            <span className={`pill ${dashboard?.online ? 'pill-online' : 'pill-offline'}`}>
-              {dashboard?.online ? 'Online' : 'Offline-first'}
-            </span>
-            <span className="muted">{dashboard?.registerName ?? 'Loading...'}</span>
-          </div>
-          <div className="status-grid">
-            <div>
-              <strong>{dashboard ? money.format(dashboard.revenueToday) : '...'}</strong>
-              <span>Revenue today</span>
-            </div>
-            <div>
-              <strong>{dashboard?.visitsToday ?? '...'}</strong>
-              <span>Visits</span>
-            </div>
-            <div>
-              <strong>{dashboard?.customerCount ?? '...'}</strong>
-              <span>Customers</span>
-            </div>
-            <div>
-              <strong>{dashboard?.pendingSync ?? '...'}</strong>
-              <span>Sync queue</span>
-            </div>
-          </div>
-          <div className="sync-box">
-            <div className="status-row">
-              <strong>Neon sync</strong>
-              <span className={`pill ${syncStatus?.enabled ? 'pill-online' : 'pill-offline'}`}>
-                {syncStatus?.enabled ? (syncStatus.syncing ? 'Syncing' : 'Enabled') : 'Disabled'}
+        <nav className="sidebar-menu" aria-label="Main navigation">
+          {navItems.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              className={`sidebar-nav-button ${view === item.key ? 'sidebar-nav-button-active' : ''}`}
+              onClick={() => setView(item.key)}
+              aria-label={item.label}
+              title={item.label}
+            >
+              <span className="sidebar-nav-icon" aria-hidden="true">
+                {item.icon}
               </span>
-            </div>
-            <p className="muted">
-              {syncStatus?.lastError
-                ? syncStatus.lastError
-                : syncStatus?.lastSuccessAt
-                  ? `Last sync ${new Date(syncStatus.lastSuccessAt).toLocaleTimeString([], {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}`
-                  : 'Connect NEON_DATABASE_URL to enable cloud sync.'}
-            </p>
-            <div className="sync-actions">
-              <button className="ghost-button" onClick={() => window.pos.syncNow().then(setSyncStatus)}>
-                Sync now
-              </button>
-              <span className="muted">{syncStatus?.pendingCount ?? 0} pending</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="panel">
-          <h2>Recent transactions</h2>
-          <div className="list">
-            {dashboard?.recentVisits.slice(0, 5).map((visit) => (
-              <div className="list-item" key={visit.id}>
-                <div>
-                  <strong>{visit.customerName}</strong>
-                  <span>{visit.serviceName}</span>
-                </div>
-                <div className="right">
-                  <strong>{money.format(visit.amount)}</strong>
-                  <span>{new Date(visit.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+            </button>
+          ))}
+        </nav>
       </aside>
 
       <main className="main">
@@ -1044,44 +1056,6 @@ function App() {
                     ? 'Configure the salon profile, loyalty rules, and database maintenance.'
                   : 'Fast checkout, built to feel calm and premium.'}
             </h2>
-          </div>
-          <div className="toolbar">
-            <button className={`ghost-button ${view === 'dashboard' ? 'ghost-active' : ''}`} onClick={() => setView('dashboard')}>
-              Dashboard
-            </button>
-            <button className={`ghost-button ${view === 'customers' ? 'ghost-active' : ''}`} onClick={() => setView('customers')}>
-              Customers
-            </button>
-            <button
-              className={`ghost-button ${view === 'billing' || view === 'pos' ? 'ghost-active' : ''}`}
-              onClick={() => setView('billing')}
-            >
-              Billing
-            </button>
-            <button
-              className={`ghost-button ${view === 'services' ? 'ghost-active' : ''}`}
-              onClick={() => setView('services')}
-            >
-              Services
-            </button>
-            <button
-              className={`ghost-button ${view === 'reports' ? 'ghost-active' : ''}`}
-              onClick={() => setView('reports')}
-            >
-              Reports
-            </button>
-            <button
-              className={`ghost-button ${view === 'inventory' ? 'ghost-active' : ''}`}
-              onClick={() => setView('inventory')}
-            >
-              Inventory
-            </button>
-            <button
-              className={`ghost-button ${view === 'settings' ? 'ghost-active' : ''}`}
-              onClick={() => setView('settings')}
-            >
-              Settings
-            </button>
           </div>
         </header>
 
