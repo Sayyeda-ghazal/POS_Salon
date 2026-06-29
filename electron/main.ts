@@ -8,11 +8,13 @@ import {
   createProduct,
   createCustomer,
   createService,
+  createBill,
   createVisit,
   redeemCustomerPoints,
   createSale,
   deleteCustomer,
   getRecentSales,
+  getRecentBills,
   getStats,
   getReports,
   getCustomerProfile,
@@ -202,11 +204,13 @@ app.whenReady().then(() => {
   ipcMain.handle('customers:find', async (_event, payload) => findCustomers(payload?.query ?? '', payload?.limit ?? 10));
   ipcMain.handle('customers:profile', async (_event, payload) => getCustomerProfile(payload?.customerId ?? ''));
   ipcMain.handle('sales:recent', async () => getRecentSales());
+  ipcMain.handle('bills:recent', async () => getRecentBills());
   ipcMain.handle('sales:create', async (_event, payload) => createSale(payload));
   ipcMain.handle('customers:create', async (_event, payload) => createCustomer(payload));
   ipcMain.handle('customers:update', async (_event, payload) => updateCustomer(payload));
   ipcMain.handle('customers:delete', async (_event, payload) => deleteCustomer(payload));
   ipcMain.handle('visits:create', async (_event, payload) => createVisit(payload));
+  ipcMain.handle('bills:create', async (_event, payload) => createBill(payload));
   ipcMain.handle('loyalty:redeem', async (_event, payload) => redeemCustomerPoints(payload));
   ipcMain.handle('products:create', async (_event, payload) => createProduct(payload));
   ipcMain.handle('services:list', async () => listServices());

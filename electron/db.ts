@@ -290,6 +290,8 @@ export function initDb() {
       source TEXT NOT NULL DEFAULT 'manual'
     );
 
+    CREATE INDEX IF NOT EXISTS idx_visits_source_created_at ON visits (source, createdAt);
+
     CREATE TABLE IF NOT EXISTS loyalty_transactions (
       id TEXT PRIMARY KEY,
       customerId TEXT NOT NULL,
@@ -1363,6 +1365,7 @@ export function createVisit(payload: {
   serviceName?: string;
   amount?: number;
   notes?: string;
+  source?: string;
 }) {
   const db = getDatabase();
   const loyaltyRules = getSettings().loyaltyRules;
@@ -1412,6 +1415,7 @@ export function createVisit(payload: {
   const id = crypto.randomUUID();
   const createdAt = new Date().toISOString();
   const notes = payload.notes?.trim() || null;
+  const source = payload.source?.trim() || 'manual';
 
   const tx = db.transaction(() => {
     db.prepare(`
@@ -1444,7 +1448,7 @@ export function createVisit(payload: {
       pointsEarned,
       notes,
       createdAt,
-      'manual'
+      source
     );
 
     if (customerId && pointsEarned > 0) {
@@ -1495,7 +1499,7 @@ export function createVisit(payload: {
         pointsEarned,
         notes,
         createdAt,
-        source: 'manual',
+        source,
       }),
       createdAt
     );
@@ -1536,8 +1540,22 @@ export function createVisit(payload: {
     pointsEarned,
     notes,
     createdAt,
-    source: 'manual',
+    source,
   } satisfies VisitRecord;
+}
+
+export function createBill(payload: {
+  customerId?: string | null;
+  customerName?: string;
+  serviceId?: string | null;
+  serviceName?: string;
+  amount?: number;
+  notes?: string;
+}) {
+  return createVisit({
+    ...payload,
+    source: 'bill',
+  });
 }
 
 export function redeemCustomerPoints(payload: { customerId: string; points: number; notes?: string }) {
@@ -1583,6 +1601,14 @@ export function getRecentVisits(limit = 8) {
   return getDatabase()
     .prepare(
       'SELECT id, customerId, customerName, serviceId, serviceCode, serviceName, servicePrice, amount, priceOverride, pointsEarned, notes, createdAt, source FROM visits ORDER BY createdAt DESC LIMIT ?'
+    )
+    .all(limit) as VisitRecord[];
+}
+
+export function getRecentBills(limit = 10) {
+  return getDatabase()
+    .prepare(
+      "SELECT id, customerId, customerName, serviceId, serviceCode, serviceName, servicePrice, amount, priceOverride, pointsEarned, notes, createdAt, source FROM visits WHERE source = 'bill' ORDER BY createdAt DESC LIMIT ?"
     )
     .all(limit) as VisitRecord[];
 }

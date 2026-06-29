@@ -200,10 +200,19 @@ declare global {
       findCustomers: (payload: { query?: string; limit?: number }) => Promise<CustomerRow[]>;
       getCustomerProfile: (payload: { customerId: string }) => Promise<CustomerProfile>;
       getRecentSales: () => Promise<SaleRecord[]>;
+      getRecentBills: () => Promise<VisitRow[]>;
       createCustomer: (payload: { name: string; phone?: string; email?: string; notes?: string }) => Promise<CustomerRow>;
       updateCustomer: (payload: { id: string; name: string; phone?: string; email?: string; notes?: string }) => Promise<CustomerRow>;
       deleteCustomer: (payload: { id: string }) => Promise<CustomerRow>;
       createVisit: (payload: {
+        customerId?: string | null;
+        customerName?: string;
+        serviceId?: string | null;
+        serviceName?: string;
+        amount?: number;
+        notes?: string;
+      }) => Promise<VisitRow>;
+      createBill: (payload: {
         customerId?: string | null;
         customerName?: string;
         serviceId?: string | null;

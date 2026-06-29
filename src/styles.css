@@ -1007,6 +1007,77 @@ input {
   min-width: 0;
 }
 
+.workspace-billing {
+  grid-template-columns: minmax(0, 1.2fr) 380px;
+}
+
+.billing-catalog {
+  display: grid;
+  gap: 18px;
+}
+
+.billing-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.billing-head > div {
+  display: grid;
+  gap: 6px;
+}
+
+.service-card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.service-card {
+  text-align: left;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 22px;
+  padding: 18px;
+  color: var(--text);
+  background:
+    linear-gradient(180deg, rgba(16, 31, 52, 0.92), rgba(9, 18, 31, 0.95));
+  cursor: pointer;
+  min-height: 190px;
+  display: grid;
+  gap: 12px;
+  transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+}
+
+.service-card:hover {
+  transform: translateY(-1px);
+}
+
+.service-card-active {
+  border-color: rgba(102, 209, 255, 0.45);
+  background:
+    radial-gradient(circle at top right, rgba(102, 209, 255, 0.1), transparent 34%),
+    linear-gradient(180deg, rgba(16, 31, 52, 0.96), rgba(9, 18, 31, 0.98));
+}
+
+.service-card h3 {
+  margin: 8px 0 0;
+  font-size: 1.18rem;
+}
+
+.service-card-description {
+  margin: 0;
+  min-height: 48px;
+}
+
+.billing-draft {
+  gap: 14px;
+}
+
+.billing-draft-body {
+  gap: 12px;
+}
+
 .search-wrap {
   margin-bottom: 16px;
 }

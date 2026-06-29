@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('pos', {
   findCustomers: (payload: { query?: string; limit?: number }) => ipcRenderer.invoke('customers:find', payload),
   getCustomerProfile: (payload: { customerId: string }) => ipcRenderer.invoke('customers:profile', payload),
   getRecentSales: () => ipcRenderer.invoke('sales:recent'),
+  getRecentBills: () => ipcRenderer.invoke('bills:recent'),
   createCustomer: (payload: { name: string; phone?: string; email?: string; notes?: string }) =>
     ipcRenderer.invoke('customers:create', payload),
   updateCustomer: (payload: { id: string; name: string; phone?: string; email?: string; notes?: string }) =>
@@ -37,6 +38,14 @@ contextBridge.exposeInMainWorld('pos', {
     amount?: number;
     notes?: string;
   }) => ipcRenderer.invoke('visits:create', payload),
+  createBill: (payload: {
+    customerId?: string | null;
+    customerName?: string;
+    serviceId?: string | null;
+    serviceName?: string;
+    amount?: number;
+    notes?: string;
+  }) => ipcRenderer.invoke('bills:create', payload),
   redeemCustomerPoints: (payload: { customerId: string; points: number; notes?: string }) =>
     ipcRenderer.invoke('loyalty:redeem', payload),
   createProduct: (payload: {
@@ -336,6 +345,21 @@ declare global {
         itemCount: number;
         createdAt: string;
       }>>;
+      getRecentBills: () => Promise<Array<{
+        id: string;
+        customerId: string | null;
+        customerName: string;
+        serviceId: string | null;
+        serviceCode: string | null;
+        serviceName: string;
+        servicePrice: number;
+        amount: number;
+        priceOverride: number;
+        pointsEarned: number;
+        notes: string | null;
+        createdAt: string;
+        source: string;
+      }>>;
       createCustomer: (payload: { name: string; phone?: string; email?: string; notes?: string }) => Promise<{
         id: string;
         name: string;
@@ -373,6 +397,28 @@ declare global {
         isActive: number;
       }>;
       createVisit: (payload: {
+        customerId?: string | null;
+        customerName?: string;
+        serviceId?: string | null;
+        serviceName?: string;
+        amount?: number;
+        notes?: string;
+      }) => Promise<{
+        id: string;
+        customerId: string | null;
+        customerName: string;
+        serviceId: string | null;
+        serviceCode: string | null;
+        serviceName: string;
+        servicePrice: number;
+        amount: number;
+        priceOverride: number;
+        pointsEarned: number;
+        notes: string | null;
+        createdAt: string;
+        source: string;
+      }>;
+      createBill: (payload: {
         customerId?: string | null;
         customerName?: string;
         serviceId?: string | null;

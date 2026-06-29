@@ -243,6 +243,7 @@ function App() {
   const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
   const [reports, setReports] = useState<ReportSnapshot | null>(null);
   const [settings, setSettings] = useState<SettingsSnapshot | null>(null);
+  const [recentBills, setRecentBills] = useState<Array<VisitRow>>([]);
   const [syncStatus, setSyncStatus] = useState<{
     enabled: boolean;
     syncing: boolean;
@@ -255,6 +256,7 @@ function App() {
   } | null>(null);
   const [query, setQuery] = useState('');
   const [cart, setCart] = useState<CartLine[]>([]);
+  const [billCart, setBillCart] = useState<Array<ServiceRow & { quantity: number }>>([]);
   const [status, setStatus] = useState<'ready' | 'saved'>('ready');
   const [view, setView] = useState<ViewMode>('dashboard');
   const [newItem, setNewItem] = useState({
@@ -299,6 +301,14 @@ function App() {
   const [selectedVisitCustomer, setSelectedVisitCustomer] = useState<CustomerRow | null>(null);
   const [newVisitStatus, setNewVisitStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [newVisitError, setNewVisitError] = useState('');
+  const [billCustomerQuery, setBillCustomerQuery] = useState('');
+  const [billCustomerMatches, setBillCustomerMatches] = useState<CustomerRow[]>([]);
+  const [billCustomerSearchStatus, setBillCustomerSearchStatus] = useState<'idle' | 'loading'>('idle');
+  const [selectedBillCustomer, setSelectedBillCustomer] = useState<CustomerRow | null>(null);
+  const [selectedBillService, setSelectedBillService] = useState<ServiceRow | null>(null);
+  const [billNotes, setBillNotes] = useState('');
+  const [billStatus, setBillStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [billError, setBillError] = useState('');
   const [customerDirectoryQuery, setCustomerDirectoryQuery] = useState('');
   const [customerDirectoryMatches, setCustomerDirectoryMatches] = useState<CustomerRow[]>([]);
   const [customerDirectoryStatus, setCustomerDirectoryStatus] = useState<'idle' | 'loading'>('idle');
@@ -336,7 +346,7 @@ function App() {
   const [customerFormMode, setCustomerFormMode] = useState<'create' | 'edit'>('create');
   const [customerFormStatus, setCustomerFormStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [customerFormError, setCustomerFormError] = useState('');
-  const [customerModal, setCustomerModal] = useState<'customer' | 'visit' | 'edit' | 'redeem' | null>(null);
+  const [customerModal, setCustomerModal] = useState<'customer' | 'visit' | 'edit' | 'redeem' | 'bill' | null>(null);
   const scanBuffer = useRef('');
   const scanTimer = useRef<number | null>(null);
   const navItems = [
@@ -366,13 +376,14 @@ function App() {
 
   useEffect(() => {
     const load = async () => {
-      const [dash, reportData, settingsData, list, serviceList, sales, sync, stock] = await Promise.all([
+      const [dash, reportData, settingsData, list, serviceList, sales, bills, sync, stock] = await Promise.all([
         window.pos.getDashboard(),
         window.pos.getReports(),
         window.pos.getSettings(),
         window.pos.listProducts(),
         window.pos.listServices(),
         window.pos.getRecentSales(),
+        window.pos.getRecentBills(),
         window.pos.getSyncStatus(),
         window.pos.listInventory(),
       ]);
@@ -388,6 +399,7 @@ function App() {
       setProducts(list);
       setServices(serviceList);
       setRecentSales(sales);
+      setRecentBills(bills);
       setSyncStatus(sync);
       setInventory(stock);
     };
@@ -453,6 +465,34 @@ function App() {
       window.clearTimeout(timer);
     };
   }, [customerSearch]);
+
+  useEffect(() => {
+    if (view !== 'billing' && customerModal !== 'bill') return;
+
+    let active = true;
+    setBillCustomerSearchStatus('loading');
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const matches = await window.pos.findCustomers({
+          query: billCustomerQuery,
+          limit: 8,
+        });
+        if (!active) return;
+        setBillCustomerMatches(matches);
+      } catch {
+        if (!active) return;
+        setBillCustomerMatches([]);
+      } finally {
+        if (active) setBillCustomerSearchStatus('idle');
+      }
+    }, 200);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [billCustomerQuery, customerModal, view]);
 
   useEffect(() => {
     let active = true;
@@ -587,13 +627,14 @@ function App() {
   };
 
   const refreshData = async () => {
-    const [dash, reportData, settingsData, list, serviceList, sales, sync, stock] = await Promise.all([
+    const [dash, reportData, settingsData, list, serviceList, sales, bills, sync, stock] = await Promise.all([
       window.pos.getDashboard(),
       window.pos.getReports(),
       window.pos.getSettings(),
       window.pos.listProducts(),
       window.pos.listServices(),
       window.pos.getRecentSales(),
+      window.pos.getRecentBills(),
       window.pos.getSyncStatus(),
       window.pos.listInventory(),
     ]);
@@ -609,6 +650,7 @@ function App() {
     setProducts(list);
     setServices(serviceList);
     setRecentSales(sales);
+    setRecentBills(bills);
     setSyncStatus(sync);
     setInventory(stock);
   };
@@ -915,6 +957,28 @@ function App() {
     setCustomerModal('visit');
   };
 
+  const openBillModal = () => {
+    setBillCustomerQuery('');
+    setBillCustomerMatches([]);
+    setBillCustomerSearchStatus('idle');
+    setSelectedBillCustomer(null);
+    setBillNotes('');
+    setBillStatus('idle');
+    setBillError('');
+    setCustomerModal('bill');
+  };
+
+  const chooseBillCustomer = (customer: CustomerRow) => {
+    setSelectedBillCustomer(customer);
+    setBillCustomerQuery(customer.name);
+    setBillCustomerMatches([]);
+    setBillCustomerSearchStatus('idle');
+  };
+
+  const chooseBillService = (service: ServiceRow) => {
+    setSelectedBillService(service);
+  };
+
   const openEditCustomerModal = () => {
     if (!customerProfile || !selectedCustomerId) return;
     setCustomerForm({
@@ -935,6 +999,44 @@ function App() {
     setRedeemStatus('idle');
     setRedeemError('');
     setCustomerModal('redeem');
+  };
+
+  const createNewBill = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setBillStatus('saving');
+    setBillError('');
+
+    try {
+      if (!selectedBillCustomer) {
+        throw new Error('Please select a customer');
+      }
+      if (!selectedBillService) {
+        throw new Error('Please select a service');
+      }
+
+      const result = await window.pos.createBill({
+        customerId: selectedBillCustomer.id,
+        customerName: selectedBillCustomer.name,
+        serviceId: selectedBillService.id,
+        serviceName: selectedBillService.name,
+        notes: billNotes || undefined,
+      });
+
+      setBillStatus('saved');
+      setBillCustomerQuery('');
+      setBillCustomerMatches([]);
+      setBillCustomerSearchStatus('idle');
+      setSelectedBillCustomer(null);
+      setBillNotes('');
+      setCustomerModal(null);
+      await refreshData();
+      alert(
+        `Bill created for ${result.customerName} - ${result.serviceName} (${money.format(result.amount)})`
+      );
+    } catch (error) {
+      setBillStatus('error');
+      setBillError(error instanceof Error ? error.message : 'Could not create bill');
+    }
   };
 
   const clearCustomerSelection = () => {
@@ -1429,7 +1531,76 @@ function App() {
               ) : null}
             </div>
           </section>
-        ) : view === 'billing' || view === 'pos' ? (
+        ) : view === 'billing' ? (
+          <section className="workspace workspace-billing">
+            <div className="catalog billing-catalog">
+              <div className="billing-head">
+                <div>
+                  <p className="eyebrow">Billing desk</p>
+                  <h2>Select a service card to build a bill.</h2>
+                </div>
+                <button type="button" className="ghost-button ghost-button-small" onClick={openBillModal}>
+                  New bill
+                </button>
+              </div>
+
+              <div className="service-card-grid">
+                {services.map((service) => (
+                  <button
+                    type="button"
+                    className={`service-card ${selectedBillService?.id === service.id ? 'service-card-active' : ''}`}
+                    key={service.id}
+                    onClick={() => chooseBillService(service)}
+                  >
+                    <div className="product-top">
+                      <span className="category">{service.code}</span>
+                      <span className="stock">{money.format(service.price)}</span>
+                    </div>
+                    <h3>{service.name}</h3>
+                    <p className="muted service-card-description">{service.description}</p>
+                    <div className="product-bottom">
+                      <strong>Tap to select</strong>
+                      <span>{selectedBillService?.id === service.id ? 'Selected' : 'Bill item'}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+
+              <div className="inventory-section inventory-section-muted">
+                <div className="inventory-section-head">
+                  <div>
+                    <h3>Saved bills</h3>
+                    <span className="muted">Latest service bills</span>
+                  </div>
+                  <span className="muted">{recentBills.length} stored</span>
+                </div>
+                <div className="customer-history-list">
+                  {recentBills.length > 0 ? (
+                    recentBills.slice(0, 6).map((bill) => (
+                      <div className="customer-history-item" key={bill.id}>
+                        <div>
+                          <strong>{bill.customerName}</strong>
+                          <span>
+                            {bill.serviceCode ? `${bill.serviceCode} · ` : ''}
+                            {bill.serviceName}
+                            {bill.notes ? ` · ${bill.notes}` : ''}
+                          </span>
+                        </div>
+                        <div className="right">
+                          <strong>{money.format(bill.amount)}</strong>
+                          <span>{new Date(bill.createdAt).toLocaleDateString()}</span>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <span className="muted">No bills created yet.</span>
+                  )}
+                </div>
+              </div>
+              </div>
+
+          </section>
+        ) : view === 'pos' ? (
           <section className="workspace">
           <div className="catalog">
             <div className="search-wrap">
@@ -1466,6 +1637,9 @@ function App() {
                 <h3>{cart.length} items</h3>
               </div>
               <div className="cart-header-actions">
+                <button type="button" className="ghost-button ghost-button-small" onClick={openBillModal}>
+                  New bill
+                </button>
                 <span className={status === 'saved' ? 'pill pill-online' : 'pill'}>{status}</span>
                 {cart.length > 0 ? (
                   <button className="ghost-button ghost-button-small" onClick={clearCart}>
@@ -1544,26 +1718,31 @@ function App() {
               <div className="inventory-section-head">
                 <div>
                   <h3>Saved bills</h3>
-                  <span className="muted">Latest transaction records</span>
+                  <span className="muted">Latest service bills</span>
                 </div>
-                <span className="muted">{recentSales.length} stored</span>
+                <span className="muted">{recentBills.length} stored</span>
               </div>
               <div className="customer-history-list">
-                {recentSales.slice(0, 6).map((sale) => (
-                  <div className="customer-history-item" key={sale.id}>
-                    <div>
-                      <strong>{sale.receiptNo}</strong>
-                      <span>
-                        {sale.itemCount} items · {sale.paymentMethod} ·{' '}
-                        {new Date(sale.createdAt).toLocaleDateString()}
-                      </span>
+                {recentBills.length > 0 ? (
+                  recentBills.slice(0, 6).map((bill) => (
+                    <div className="customer-history-item" key={bill.id}>
+                      <div>
+                        <strong>{bill.customerName}</strong>
+                        <span>
+                          {bill.serviceCode ? `${bill.serviceCode} · ` : ''}
+                          {bill.serviceName}
+                          {bill.notes ? ` · ${bill.notes}` : ''}
+                        </span>
+                      </div>
+                      <div className="right">
+                        <strong>{money.format(bill.amount)}</strong>
+                        <span>{new Date(bill.createdAt).toLocaleDateString()}</span>
+                      </div>
                     </div>
-                    <div className="right">
-                      <strong>{money.format(sale.grandTotal)}</strong>
-                      <span>{sale.cashierName}</span>
-                    </div>
-                  </div>
-                ))}
+                  ))
+                ) : (
+                  <span className="muted">No bills created yet.</span>
+                )}
               </div>
             </div>
           </aside>
@@ -2341,6 +2520,8 @@ function App() {
                       ? 'Add customer'
                       : customerModal === 'visit'
                         ? 'New visit'
+                        : customerModal === 'bill'
+                          ? 'New bill'
                         : customerModal === 'edit'
                           ? 'Edit customer'
                           : 'Redeem loyalty'}
@@ -2350,6 +2531,8 @@ function App() {
                       ? 'Create a customer profile'
                       : customerModal === 'visit'
                         ? 'Log a salon visit'
+                        : customerModal === 'bill'
+                          ? 'Select a customer and service'
                         : customerModal === 'edit'
                           ? customerProfile?.customer.name || 'Update customer'
                           : 'Spend loyalty points'}
@@ -2572,6 +2755,90 @@ function App() {
                         <span className="success-text">Visit logged.</span>
                       ) : (
                         <span className="muted">Earn loyalty points on paid visits.</span>
+                      )}
+                    </div>
+                  </div>
+                </form>
+              ) : customerModal === 'bill' ? (
+                <form className="new-item-form" onSubmit={createNewBill}>
+                  <div className="form-grid">
+                    <div className="customer-results full-width">
+                      {selectedBillService ? (
+                        <div className="customer-result customer-result-selected">
+                          <div>
+                            <strong>{selectedBillService.name}</strong>
+                            <span>
+                              {selectedBillService.code} · {selectedBillService.description}
+                            </span>
+                          </div>
+                          <div className="right">
+                            <strong>{money.format(selectedBillService.price)}</strong>
+                            <span>selected service</span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="empty">
+                          <strong>No service selected</strong>
+                          <span>Select a service card on the billing screen first.</span>
+                        </div>
+                      )}
+                    </div>
+                    <label className="full-width">
+                      <span>Customer</span>
+                      <input
+                        className="field"
+                        placeholder="Search customer name, phone, or email"
+                        value={billCustomerQuery}
+                        onChange={(event) => {
+                          setBillCustomerQuery(event.target.value);
+                          setSelectedBillCustomer(null);
+                        }}
+                      />
+                    </label>
+                    <div className="customer-results full-width">
+                      {billCustomerSearchStatus === 'loading' ? <span className="muted">Searching customers...</span> : null}
+                      {billCustomerMatches.map((customer) => (
+                        <button
+                          type="button"
+                          key={customer.id}
+                          className={`customer-result ${
+                            selectedBillCustomer?.id === customer.id ? 'customer-result-selected' : ''
+                          }`}
+                          onClick={() => chooseBillCustomer(customer)}
+                        >
+                          <strong>{customer.name}</strong>
+                          <span>
+                            {customer.phone || 'No phone'}
+                            {customer.email ? ` · ${customer.email}` : ''}
+                          </span>
+                        </button>
+                      ))}
+                      {billCustomerQuery && billCustomerSearchStatus === 'idle' && billCustomerMatches.length === 0 ? (
+                        <span className="muted">No matching customers found.</span>
+                      ) : null}
+                    </div>
+
+                    <label className="full-width">
+                      <span>Notes</span>
+                      <input
+                        className="field"
+                        placeholder="Optional bill note"
+                        value={billNotes}
+                        onChange={(event) => setBillNotes(event.target.value)}
+                      />
+                    </label>
+                  </div>
+                  <div className="form-footer">
+                    <button className="primary-button" type="submit" disabled={billStatus === 'saving'}>
+                      {billStatus === 'saving' ? 'Saving...' : 'Create bill'}
+                    </button>
+                    <div className="form-message">
+                      {billError ? (
+                        <span className="error-text">{billError}</span>
+                      ) : billStatus === 'saved' ? (
+                        <span className="success-text">Bill created successfully.</span>
+                      ) : (
+                        <span className="muted">Pick a customer to create the bill.</span>
                       )}
                     </div>
                   </div>
