@@ -219,6 +219,12 @@ declare global {
         serviceName?: string;
         amount?: number;
         notes?: string;
+        services?: Array<{
+          serviceId: string;
+          serviceCode?: string | null;
+          serviceName: string;
+          price: number;
+        }>;
       }) => Promise<VisitRow>;
       redeemCustomerPoints: (payload: { customerId: string; points: number; notes?: string }) => Promise<{
         customerId: string;

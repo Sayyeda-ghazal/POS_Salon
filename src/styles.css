@@ -1008,7 +1008,7 @@ input {
 }
 
 .workspace-billing {
-  grid-template-columns: minmax(0, 1.2fr) 380px;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .billing-catalog {

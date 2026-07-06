@@ -45,6 +45,12 @@ contextBridge.exposeInMainWorld('pos', {
     serviceName?: string;
     amount?: number;
     notes?: string;
+    services?: Array<{
+      serviceId: string;
+      serviceCode?: string | null;
+      serviceName: string;
+      price: number;
+    }>;
   }) => ipcRenderer.invoke('bills:create', payload),
   redeemCustomerPoints: (payload: { customerId: string; points: number; notes?: string }) =>
     ipcRenderer.invoke('loyalty:redeem', payload),

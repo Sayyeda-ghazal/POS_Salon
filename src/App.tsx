@@ -305,7 +305,7 @@ function App() {
   const [billCustomerMatches, setBillCustomerMatches] = useState<CustomerRow[]>([]);
   const [billCustomerSearchStatus, setBillCustomerSearchStatus] = useState<'idle' | 'loading'>('idle');
   const [selectedBillCustomer, setSelectedBillCustomer] = useState<CustomerRow | null>(null);
-  const [selectedBillService, setSelectedBillService] = useState<ServiceRow | null>(null);
+  const [selectedBillServices, setSelectedBillServices] = useState<ServiceRow[]>([]);
   const [billNotes, setBillNotes] = useState('');
   const [billStatus, setBillStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [billError, setBillError] = useState('');
@@ -361,6 +361,14 @@ function App() {
   const selectedService = useMemo(
     () => services.find((service) => service.id === newVisit.serviceId) ?? null,
     [newVisit.serviceId, services]
+  );
+  const selectedBillServiceIds = useMemo(
+    () => new Set(selectedBillServices.map((service) => service.id)),
+    [selectedBillServices]
+  );
+  const selectedBillTotal = useMemo(
+    () => selectedBillServices.reduce((total, service) => total + service.price, 0),
+    [selectedBillServices]
   );
 
   const refreshSettings = async () => {
@@ -962,6 +970,7 @@ function App() {
     setBillCustomerMatches([]);
     setBillCustomerSearchStatus('idle');
     setSelectedBillCustomer(null);
+    setSelectedBillServices([]);
     setBillNotes('');
     setBillStatus('idle');
     setBillError('');
@@ -976,7 +985,11 @@ function App() {
   };
 
   const chooseBillService = (service: ServiceRow) => {
-    setSelectedBillService(service);
+    setSelectedBillServices((current) =>
+      current.some((item) => item.id === service.id)
+        ? current.filter((item) => item.id !== service.id)
+        : [...current, service]
+    );
   };
 
   const openEditCustomerModal = () => {
@@ -1010,15 +1023,19 @@ function App() {
       if (!selectedBillCustomer) {
         throw new Error('Please select a customer');
       }
-      if (!selectedBillService) {
-        throw new Error('Please select a service');
+      if (selectedBillServices.length === 0) {
+        throw new Error('Please select at least one service');
       }
 
       const result = await window.pos.createBill({
         customerId: selectedBillCustomer.id,
         customerName: selectedBillCustomer.name,
-        serviceId: selectedBillService.id,
-        serviceName: selectedBillService.name,
+        services: selectedBillServices.map((service) => ({
+          serviceId: service.id,
+          serviceCode: service.code,
+          serviceName: service.name,
+          price: service.price,
+        })),
         notes: billNotes || undefined,
       });
 
@@ -1027,6 +1044,7 @@ function App() {
       setBillCustomerMatches([]);
       setBillCustomerSearchStatus('idle');
       setSelectedBillCustomer(null);
+      setSelectedBillServices([]);
       setBillNotes('');
       setCustomerModal(null);
       await refreshData();
@@ -1544,14 +1562,14 @@ function App() {
                 </button>
               </div>
 
-              <div className="service-card-grid">
-                {services.map((service) => (
-                  <button
-                    type="button"
-                    className={`service-card ${selectedBillService?.id === service.id ? 'service-card-active' : ''}`}
-                    key={service.id}
-                    onClick={() => chooseBillService(service)}
-                  >
+                <div className="service-card-grid">
+                  {services.map((service) => (
+                    <button
+                      type="button"
+                      className={`service-card ${selectedBillServiceIds.has(service.id) ? 'service-card-active' : ''}`}
+                      key={service.id}
+                      onClick={() => chooseBillService(service)}
+                    >
                     <div className="product-top">
                       <span className="category">{service.code}</span>
                       <span className="stock">{money.format(service.price)}</span>
@@ -1559,11 +1577,51 @@ function App() {
                     <h3>{service.name}</h3>
                     <p className="muted service-card-description">{service.description}</p>
                     <div className="product-bottom">
-                      <strong>Tap to select</strong>
-                      <span>{selectedBillService?.id === service.id ? 'Selected' : 'Bill item'}</span>
+                      <strong>{selectedBillServiceIds.has(service.id) ? 'Selected' : 'Tap to add'}</strong>
+                      <span>{selectedBillServiceIds.has(service.id) ? 'Remove to undo' : 'Bill item'}</span>
                     </div>
                   </button>
                 ))}
+              </div>
+
+              <div className="inventory-section inventory-section-muted billing-draft">
+                <div className="inventory-section-head">
+                  <div>
+                    <h3>Selected services</h3>
+                    <span className="muted">Tap a service card again to remove it</span>
+                  </div>
+                  <span className="muted">
+                    {selectedBillServices.length} selected
+                  </span>
+                </div>
+                <div className="billing-draft-body">
+                  {selectedBillServices.length > 0 ? (
+                    selectedBillServices.map((service) => (
+                      <div className="customer-history-item" key={service.id}>
+                        <div>
+                          <strong>{service.name}</strong>
+                          <span>
+                            {service.code} · {service.description}
+                          </span>
+                        </div>
+                        <div className="right">
+                          <strong>{money.format(service.price)}</strong>
+                          <button type="button" className="ghost-button ghost-button-small" onClick={() => chooseBillService(service)}>
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <span className="muted">Select one or more services to build the bill.</span>
+                  )}
+                </div>
+                <div className="totals">
+                  <div className="grand">
+                    <span>Total</span>
+                    <strong>{money.format(selectedBillTotal)}</strong>
+                  </div>
+                </div>
               </div>
 
               <div className="inventory-section inventory-section-muted">
@@ -1597,8 +1655,7 @@ function App() {
                   )}
                 </div>
               </div>
-              </div>
-
+            </div>
           </section>
         ) : view === 'pos' ? (
           <section className="workspace">
@@ -2762,27 +2819,29 @@ function App() {
               ) : customerModal === 'bill' ? (
                 <form className="new-item-form" onSubmit={createNewBill}>
                   <div className="form-grid">
-                    <div className="customer-results full-width">
-                      {selectedBillService ? (
-                        <div className="customer-result customer-result-selected">
-                          <div>
-                            <strong>{selectedBillService.name}</strong>
-                            <span>
-                              {selectedBillService.code} · {selectedBillService.description}
-                            </span>
-                          </div>
-                          <div className="right">
-                            <strong>{money.format(selectedBillService.price)}</strong>
-                            <span>selected service</span>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="empty">
-                          <strong>No service selected</strong>
-                          <span>Select a service card on the billing screen first.</span>
-                        </div>
-                      )}
+                <div className="customer-results full-width">
+                  {selectedBillServices.length > 0 ? (
+                    <div className="customer-result customer-result-selected">
+                      <div>
+                        <strong>
+                          {selectedBillServices.length} service{selectedBillServices.length === 1 ? '' : 's'} selected
+                        </strong>
+                        <span>
+                          {selectedBillServices.map((service) => service.name).join(', ')}
+                        </span>
+                      </div>
+                      <div className="right">
+                        <strong>{money.format(selectedBillTotal)}</strong>
+                        <span>total amount</span>
+                      </div>
                     </div>
+                  ) : (
+                    <div className="empty">
+                      <strong>No services selected</strong>
+                      <span>Select one or more service cards on the billing screen first.</span>
+                    </div>
+                  )}
+                </div>
                     <label className="full-width">
                       <span>Customer</span>
                       <input

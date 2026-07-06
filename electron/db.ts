@@ -1551,7 +1551,37 @@ export function createBill(payload: {
   serviceName?: string;
   amount?: number;
   notes?: string;
+  services?: Array<{
+    serviceId: string;
+    serviceCode?: string | null;
+    serviceName: string;
+    price: number;
+  }>;
 }) {
+  const services = (payload.services ?? [])
+    .map((service) => ({
+      serviceId: service.serviceId.trim(),
+      serviceCode: service.serviceCode?.trim() || null,
+      serviceName: service.serviceName.trim(),
+      price: service.price,
+    }))
+    .filter((service) => service.serviceName && Number.isFinite(service.price));
+
+  if (services.length > 0) {
+    const serviceName = services.map((service) => service.serviceName).join(', ');
+    const amount = services.reduce((sum, service) => sum + service.price, 0);
+
+    return createVisit({
+      customerId: payload.customerId,
+      customerName: payload.customerName,
+      serviceId: services.length === 1 ? services[0].serviceId : null,
+      serviceName,
+      amount,
+      notes: payload.notes,
+      source: 'bill',
+    });
+  }
+
   return createVisit({
     ...payload,
     source: 'bill',
