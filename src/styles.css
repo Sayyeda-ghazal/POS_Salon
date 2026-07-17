@@ -366,6 +366,128 @@ input {
   gap: 6px;
 }
 
+/* ---- Reports page ---- */
+.reports-view {
+  display: grid;
+  gap: 22px;
+}
+
+.reports-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.reports-header h2 {
+  margin-top: 4px;
+  font-family: "Space Grotesk", sans-serif;
+}
+
+.report-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Compact stat strip at the top of each report panel */
+.report-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.report-stat {
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  display: grid;
+  gap: 6px;
+}
+
+.report-stat span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.report-stat strong {
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 1.15rem;
+}
+
+.report-list-label {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.report-list {
+  display: grid;
+  gap: 4px;
+}
+
+.report-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 8px;
+  border-radius: 12px;
+  transition: background 0.15s ease;
+}
+
+.report-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.report-rank {
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(102, 209, 255, 0.14);
+  color: #bdeeff;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.report-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.report-row-main strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-row-main span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.report-row-value {
+  flex: 0 0 auto;
+  font-family: "Space Grotesk", sans-serif;
+  white-space: nowrap;
+}
+
+.report-empty {
+  color: var(--muted);
+  font-size: 0.86rem;
+  padding: 8px;
+}
+
 .quick-actions-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -571,10 +693,85 @@ input {
   font-size: 0.84rem;
 }
 
+.customer-profile-grid-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .customer-profile-actions {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+/* Redeem: services affordable with the customer's points */
+.redeem-services {
+  margin-bottom: 18px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.redeem-service-item {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  color: inherit;
+  cursor: pointer;
+  border-radius: 10px;
+  transition: background 0.15s ease;
+}
+
+.redeem-service-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* Full transaction ledger (modal) */
+.customer-ledger-list {
+  gap: 18px;
+}
+
+.customer-ledger-entry {
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.customer-ledger-entry-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.customer-ledger-entry-head .right {
+  text-align: right;
+}
+
+.customer-ledger-entry-head strong {
+  display: block;
+}
+
+.customer-ledger-items {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.customer-ledger-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  font-size: 0.9rem;
+}
+
+.customer-ledger-item .pill {
+  text-transform: capitalize;
 }
 
 .new-item-form {
@@ -803,6 +1000,225 @@ input {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 390px;
   gap: 22px;
+}
+
+/* ---- Checkout form (new) ---- */
+.checkout-form-panel {
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  align-self: start;
+}
+
+.search-select {
+  position: relative;
+}
+
+.search-select label span,
+.checkout-pickers label span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.search-select-list {
+  position: absolute;
+  z-index: 20;
+  left: 0;
+  right: 0;
+  margin-top: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 6px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: linear-gradient(180deg, rgba(14, 26, 44, 0.99), rgba(9, 17, 29, 0.99));
+  box-shadow: var(--shadow);
+}
+
+.search-select-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  font-size: 0.9rem;
+}
+
+.search-select-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.search-select-empty {
+  display: block;
+  padding: 10px 12px;
+}
+
+.checkout-customer-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(64, 211, 156, 0.24);
+  background: rgba(64, 211, 156, 0.08);
+}
+
+.checkout-customer-card .right {
+  text-align: right;
+}
+
+.checkout-customer-card strong {
+  display: block;
+}
+
+.checkout-walkin-note,
+.checkout-require-note {
+  margin: 0;
+  font-size: 0.86rem;
+}
+
+.checkout-require-note {
+  margin-bottom: 10px;
+  color: #ffcf8b;
+}
+
+.checkout-pickers {
+  display: grid;
+  gap: 16px;
+}
+
+/* Discount toggle + preview */
+.discount-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.discount-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.discount-controls .field {
+  width: 110px;
+}
+
+.discount-toggle {
+  display: inline-flex;
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.discount-toggle button {
+  padding: 6px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.82rem;
+}
+
+.discount-toggle button.active {
+  background: rgba(102, 209, 255, 0.18);
+  color: #bdeeff;
+}
+
+.discount-applied,
+.points-preview {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+
+.points-preview strong {
+  color: #a9f8dc;
+}
+
+/* Receipt preview modal */
+.receipt-modal {
+  width: min(420px, 100%);
+}
+
+.receipt-paper {
+  margin: 16px 0;
+  padding: 20px;
+  border-radius: 14px;
+  background: #ffffff;
+  color: #111111;
+  font-family: 'Courier New', monospace;
+}
+
+.receipt-salon {
+  margin: 0;
+  text-align: center;
+  font-size: 1.05rem;
+}
+
+.receipt-muted {
+  margin: 2px 0;
+  font-size: 0.78rem;
+  color: #555555;
+}
+
+.receipt-divider {
+  border-top: 1px dashed #bbbbbb;
+  margin: 10px 0;
+}
+
+.receipt-items {
+  display: grid;
+  gap: 8px;
+}
+
+.receipt-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.82rem;
+}
+
+.receipt-item > div {
+  display: flex;
+  flex-direction: column;
+}
+
+.receipt-total-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.84rem;
+  margin: 3px 0;
+}
+
+.receipt-grand {
+  font-weight: 700;
+  font-size: 0.98rem;
+  margin-top: 6px;
+}
+
+.receipt-thanks {
+  margin: 14px 0 0;
+  text-align: center;
+  font-size: 0.82rem;
+}
+
+.receipt-actions {
+  display: flex;
+  gap: 10px;
 }
 
 .inventory-view {

@@ -3,23 +3,52 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { app } from 'electron';
-import type { CartItem, Product, SaleSummary, ServicePackage } from './schema';
+import * as XLSX from 'xlsx';
+import type { Product, SaleSummary, ServicePackage } from './schema';
 
 type SaleRecord = SaleSummary & {
   id: string;
   receiptNo: string;
+  customerId: string | null;
+  customerName: string;
   cashierName: string;
   paymentMethod: string;
   createdAt: string;
   itemCount: number;
+  loyaltyPointsEarned: number;
+  originType: string | null;
+  originId: string | null;
   detailedItems?: Array<{
     id: string;
-    productId: string;
-    productName: string;
-    quantity: number;
-    unitPrice: number;
+    itemType: 'product' | 'service';
+    itemId: string | null;
+    name: string;
+    qty: number;
+    price: number;
+    taxRate: number;
     lineTotal: number;
   }>;
+};
+
+type TransactionItemRecord = {
+  id: string;
+  transactionId: string;
+  itemType: 'product' | 'service';
+  itemId: string | null;
+  name: string;
+  price: number;
+  qty: number;
+  taxRate: number;
+  lineTotal: number;
+};
+
+type TransactionLineInput = {
+  type: 'product' | 'service';
+  itemId?: string | null;
+  name: string;
+  price: number;
+  qty?: number;
+  taxRate?: number;
 };
 
 type CustomerRecord = {
@@ -79,13 +108,33 @@ export type CustomerServiceSummary = {
   totalAmount: number;
 };
 
+export type LedgerItem = {
+  itemType: 'product' | 'service';
+  name: string;
+  qty: number;
+  price: number;
+  lineTotal: number;
+};
+
+export type LedgerEntry = {
+  id: string;
+  receiptNo: string;
+  createdAt: string;
+  paymentMethod: string;
+  grandTotal: number;
+  itemCount: number;
+  pointsEarned: number;
+  items: LedgerItem[];
+};
+
 export type CustomerProfile = {
   customer: CustomerRecord;
-  recentVisits: VisitRecord[];
-  favoriteServices: CustomerServiceSummary[];
+  // Services taken during the customer's most recent visit that had services.
+  lastVisitServices: LedgerItem[];
   pointsEarnedTotal: number;
   pointsRedeemedTotal: number;
-  loyaltyTransactions: LoyaltyTransactionRecord[];
+  // Full transaction ledger (newest first), shown behind a button.
+  ledger: LedgerEntry[];
 };
 
 export type RevenueReport = {
@@ -95,6 +144,11 @@ export type RevenueReport = {
   totalDiscount: number;
   averageSaleValue: number;
   topPaymentMethod: string;
+  topProducts: Array<{
+    productName: string;
+    quantitySold: number;
+    totalAmount: number;
+  }>;
   monthlyTrend: Array<{
     month: string;
     revenue: number;
@@ -157,8 +211,8 @@ export type SalonInfoSettings = {
 };
 
 export type LoyaltyRulesSettings = {
-  pointsPer100Currency: number;
-  redemptionValuePerPoint: number;
+  // How many currency units (PKR) a customer must spend on services to earn 1 point.
+  currencyPerPoint: number;
   minimumRedeemPoints: number;
 };
 
@@ -174,6 +228,10 @@ const DB_FILENAME = 'offline-pos.sqlite3';
 const SALON_INFO_KEY = 'salon_info';
 const LOYALTY_RULES_KEY = 'loyalty_rules';
 
+// Loyalty conversion: 15 PKR spent on services = 1 point, and when redeeming
+// 1 point is worth 15 PKR of service value. Points are earned on services only.
+const PKR_PER_POINT = 15;
+
 const defaultSalonInfo: SalonInfoSettings = {
   name: 'Front Counter Salon',
   phone: '0300-0000000',
@@ -183,8 +241,7 @@ const defaultSalonInfo: SalonInfoSettings = {
 };
 
 const defaultLoyaltyRules: LoyaltyRulesSettings = {
-  pointsPer100Currency: 1,
-  redemptionValuePerPoint: 1,
+  currencyPerPoint: PKR_PER_POINT,
   minimumRedeemPoints: 50,
 };
 
@@ -216,12 +273,15 @@ export function initDb() {
       price REAL NOT NULL,
       stock INTEGER NOT NULL,
       taxRate REAL NOT NULL,
+      redeemPoints INTEGER NOT NULL DEFAULT 0,
       isActive INTEGER NOT NULL DEFAULT 1
     );
 
     CREATE TABLE IF NOT EXISTS sales (
       id TEXT PRIMARY KEY,
       receiptNo TEXT NOT NULL,
+      customerId TEXT,
+      customerName TEXT NOT NULL DEFAULT 'Walk-in',
       cashierName TEXT NOT NULL,
       subtotal REAL NOT NULL,
       taxTotal REAL NOT NULL,
@@ -241,6 +301,37 @@ export function initDb() {
       unitPrice REAL NOT NULL,
       lineTotal REAL NOT NULL,
       FOREIGN KEY (saleId) REFERENCES sales(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS transactions (
+      id TEXT PRIMARY KEY,
+      receiptNo TEXT NOT NULL,
+      customerId TEXT,
+      customerName TEXT NOT NULL,
+      cashierName TEXT NOT NULL,
+      subtotal REAL NOT NULL,
+      taxTotal REAL NOT NULL,
+      discountTotal REAL NOT NULL,
+      grandTotal REAL NOT NULL,
+      paymentMethod TEXT NOT NULL,
+      loyaltyPointsEarned INTEGER NOT NULL DEFAULT 0,
+      itemCount INTEGER NOT NULL,
+      createdAt TEXT NOT NULL,
+      originType TEXT,
+      originId TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS transaction_items (
+      id TEXT PRIMARY KEY,
+      transactionId TEXT NOT NULL,
+      itemType TEXT NOT NULL,
+      itemId TEXT,
+      name TEXT NOT NULL,
+      price REAL NOT NULL,
+      qty INTEGER NOT NULL,
+      taxRate REAL NOT NULL DEFAULT 0,
+      lineTotal REAL NOT NULL,
+      FOREIGN KEY (transactionId) REFERENCES transactions(id)
     );
 
     CREATE TABLE IF NOT EXISTS sync_queue (
@@ -308,6 +399,7 @@ export function initDb() {
       name TEXT NOT NULL,
       description TEXT NOT NULL,
       price REAL NOT NULL,
+      redeemPoints INTEGER NOT NULL DEFAULT 0,
       isActive INTEGER NOT NULL DEFAULT 1
     );
 
@@ -320,6 +412,11 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_products_barcode ON products (barcode);
     CREATE INDEX IF NOT EXISTS idx_products_sku ON products (sku);
     CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales (createdAt);
+    CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions (createdAt);
+    CREATE INDEX IF NOT EXISTS idx_transactions_customer_id_created_at ON transactions (customerId, createdAt);
+    CREATE INDEX IF NOT EXISTS idx_transactions_origin ON transactions (originType, originId);
+    CREATE INDEX IF NOT EXISTS idx_transaction_items_transaction_id ON transaction_items (transactionId);
+    CREATE INDEX IF NOT EXISTS idx_transaction_items_type_item ON transaction_items (itemType, itemId);
     CREATE INDEX IF NOT EXISTS idx_visits_created_at ON visits (createdAt);
     CREATE INDEX IF NOT EXISTS idx_visits_customer_id_created_at ON visits (customerId, createdAt);
     CREATE INDEX IF NOT EXISTS idx_customers_active_name ON customers (isActive, name);
@@ -362,6 +459,28 @@ export function initDb() {
     }
   }
 
+  // Add per-service redeem-points column, backfilling existing rows so they
+  // stay redeemable (points needed = ceil(price / PKR_PER_POINT)).
+  try {
+    db.prepare('ALTER TABLE services ADD COLUMN redeemPoints INTEGER NOT NULL DEFAULT 0').run();
+    db.prepare(
+      `UPDATE services SET redeemPoints = CAST((price + ? - 1) / ? AS INTEGER) WHERE redeemPoints = 0`
+    ).run(PKR_PER_POINT, PKR_PER_POINT);
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes('duplicate column name')) {
+      throw error;
+    }
+  }
+
+  // Add per-product redeem-points column (0 = not redeemable; set per product).
+  try {
+    db.prepare('ALTER TABLE products ADD COLUMN redeemPoints INTEGER NOT NULL DEFAULT 0').run();
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes('duplicate column name')) {
+      throw error;
+    }
+  }
+
   db.prepare('INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?), (?, ?)').run(
     SALON_INFO_KEY,
     JSON.stringify(defaultSalonInfo),
@@ -372,15 +491,15 @@ export function initDb() {
   const count = db.prepare('SELECT COUNT(*) as count FROM products').get() as { count: number };
   if (count.count === 0) {
     const seed = db.prepare(`
-      INSERT INTO products (id, sku, barcode, name, category, price, stock, taxRate, isActive)
-      VALUES (@id, @sku, @barcode, @name, @category, @price, @stock, @taxRate, 1)
+      INSERT INTO products (id, sku, barcode, name, category, price, stock, taxRate, redeemPoints, isActive)
+      VALUES (@id, @sku, @barcode, @name, @category, @price, @stock, @taxRate, @redeemPoints, 1)
     `);
     const rows: Omit<Product, 'isActive'>[] = [
-      { id: crypto.randomUUID(), sku: 'BRD-1001', barcode: '1110001110001', name: 'Sourdough Bread', category: 'Bakery', price: 4.5, stock: 42, taxRate: 0.08 },
-      { id: crypto.randomUUID(), sku: 'MIL-2001', barcode: '2220002220002', name: 'Whole Milk', category: 'Dairy', price: 3.25, stock: 30, taxRate: 0.08 },
-      { id: crypto.randomUUID(), sku: 'CF-3001', barcode: '3330003330003', name: 'House Coffee', category: 'Beverages', price: 6.75, stock: 18, taxRate: 0.08 },
-      { id: crypto.randomUUID(), sku: 'SNK-4001', barcode: '4440004440004', name: 'Trail Mix', category: 'Snacks', price: 5.95, stock: 25, taxRate: 0.08 },
-      { id: crypto.randomUUID(), sku: 'FR-5001', barcode: '5550005550005', name: 'Bananas', category: 'Produce', price: 2.99, stock: 50, taxRate: 0.08 },
+      { id: crypto.randomUUID(), sku: 'BRD-1001', barcode: '1110001110001', name: 'Sourdough Bread', category: 'Bakery', price: 4.5, stock: 42, taxRate: 0.08, redeemPoints: 0 },
+      { id: crypto.randomUUID(), sku: 'MIL-2001', barcode: '2220002220002', name: 'Whole Milk', category: 'Dairy', price: 3.25, stock: 30, taxRate: 0.08, redeemPoints: 0 },
+      { id: crypto.randomUUID(), sku: 'CF-3001', barcode: '3330003330003', name: 'House Coffee', category: 'Beverages', price: 6.75, stock: 18, taxRate: 0.08, redeemPoints: 0 },
+      { id: crypto.randomUUID(), sku: 'SNK-4001', barcode: '4440004440004', name: 'Trail Mix', category: 'Snacks', price: 5.95, stock: 25, taxRate: 0.08, redeemPoints: 0 },
+      { id: crypto.randomUUID(), sku: 'FR-5001', barcode: '5550005550005', name: 'Bananas', category: 'Produce', price: 2.99, stock: 50, taxRate: 0.08, redeemPoints: 0 },
     ];
     for (const row of rows) seed.run(row);
   }
@@ -432,8 +551,8 @@ export function initDb() {
   const serviceCount = db.prepare('SELECT COUNT(*) as count FROM services').get() as { count: number };
   if (serviceCount.count === 0) {
     const seedService = db.prepare(`
-      INSERT INTO services (id, code, name, description, price, isActive)
-      VALUES (@id, @code, @name, @description, @price, 1)
+      INSERT INTO services (id, code, name, description, price, redeemPoints, isActive)
+      VALUES (@id, @code, @name, @description, @price, @redeemPoints, 1)
     `);
     const rows: Omit<ServiceRecord, 'isActive'>[] = [
       {
@@ -442,6 +561,7 @@ export function initDb() {
         name: 'Deep Cleansing Facial',
         description: 'A refreshing facial treatment focused on cleansing and hydration.',
         price: 3500,
+        redeemPoints: Math.ceil(3500 / PKR_PER_POINT),
       },
       {
         id: crypto.randomUUID(),
@@ -449,6 +569,7 @@ export function initDb() {
         name: 'Signature Hair Spa',
         description: 'Scalp massage, nourishing mask, and smooth blow-dry finish.',
         price: 4800,
+        redeemPoints: Math.ceil(4800 / PKR_PER_POINT),
       },
       {
         id: crypto.randomUUID(),
@@ -456,12 +577,206 @@ export function initDb() {
         name: 'Classic Manicure',
         description: 'Nail shaping, cuticle care, polish, and finishing touch.',
         price: 2200,
+        redeemPoints: Math.ceil(2200 / PKR_PER_POINT),
       },
     ];
     for (const row of rows) seedService.run(row);
   }
 
+  try {
+    migrateLegacyTransactions(db);
+  } catch (error) {
+    // Legacy migration is best-effort: a malformed or partially-migrated
+    // legacy database must never block app startup / window creation.
+    console.warn('Skipping legacy transaction migration:', error);
+  }
   initialized = true;
+}
+
+function migrateLegacyTransactions(db: InstanceType<typeof Database>) {
+  const hasTransactions = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'transactions'")
+    .get() as { name: string } | undefined;
+  if (!hasTransactions) return;
+
+  const tableExists = (name: string) =>
+    !!db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get(name);
+  const columnNames = (table: string) =>
+    new Set(
+      (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
+        (c) => c.name
+      )
+    );
+
+  // Older databases may have a `sales` table that predates the customerId /
+  // customerName columns. Only select columns that actually exist so the
+  // migration never throws "no such column".
+  const salesCols = tableExists('sales') ? columnNames('sales') : new Set<string>();
+  const hasCustomerId = salesCols.has('customerId');
+  const hasCustomerName = salesCols.has('customerName');
+
+  const legacySaleRows = (!tableExists('sales')
+    ? []
+    : db
+        .prepare(
+          `SELECT id, receiptNo, cashierName, subtotal, taxTotal, discountTotal, grandTotal, paymentMethod, itemCount, createdAt${hasCustomerId ? ', customerId' : ''}${hasCustomerName ? ', customerName' : ''} FROM sales ORDER BY createdAt ASC`
+        )
+        .all()) as Array<{
+    id: string;
+    receiptNo: string;
+    cashierName: string;
+    subtotal: number;
+    taxTotal: number;
+    discountTotal: number;
+    grandTotal: number;
+    paymentMethod: string;
+    itemCount: number;
+    createdAt: string;
+    customerId: string | null;
+    customerName: string | null;
+  }>;
+
+  const legacySaleItems = db
+    .prepare(
+      'SELECT id, saleId, productId, productName, quantity, unitPrice, lineTotal FROM sale_items ORDER BY saleId ASC'
+    )
+    .all() as Array<{
+    id: string;
+    saleId: string;
+    productId: string;
+    productName: string;
+    quantity: number;
+    unitPrice: number;
+    lineTotal: number;
+  }>;
+
+  const saleItemsBySaleId = new Map<string, typeof legacySaleItems>();
+  for (const item of legacySaleItems) {
+    const current = saleItemsBySaleId.get(item.saleId) ?? [];
+    current.push(item);
+    saleItemsBySaleId.set(item.saleId, current);
+  }
+
+  const legacyVisits = db
+    .prepare(
+      `SELECT id, customerId, customerName, serviceId, serviceCode, serviceName, servicePrice, amount, priceOverride, pointsEarned, notes, createdAt, source
+       FROM visits
+       WHERE source != 'sale'
+       ORDER BY createdAt ASC`
+    )
+    .all() as VisitRecord[];
+
+  const insertTransaction = db.prepare(`
+    INSERT OR IGNORE INTO transactions (
+      id,
+      receiptNo,
+      customerId,
+      customerName,
+      cashierName,
+      subtotal,
+      taxTotal,
+      discountTotal,
+      grandTotal,
+      paymentMethod,
+      loyaltyPointsEarned,
+      itemCount,
+      createdAt,
+      originType,
+      originId
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const insertTransactionItem = db.prepare(`
+    INSERT OR IGNORE INTO transaction_items (
+      id,
+      transactionId,
+      itemType,
+      itemId,
+      name,
+      price,
+      qty,
+      taxRate,
+      lineTotal
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  for (const sale of legacySaleRows) {
+    const items = saleItemsBySaleId.get(sale.id) ?? [];
+    const customerName = sale.customerName?.trim() || 'Walk-in';
+
+    insertTransaction.run(
+      sale.id,
+      sale.receiptNo,
+      sale.customerId ?? null,
+      customerName,
+      sale.cashierName,
+      sale.subtotal,
+      sale.taxTotal,
+      sale.discountTotal,
+      sale.grandTotal,
+      sale.paymentMethod,
+      0,
+      sale.itemCount,
+      sale.createdAt,
+      'sale',
+      sale.id
+    );
+
+    for (const item of items) {
+      insertTransactionItem.run(
+        `sale-${item.id}`,
+        sale.id,
+        'product',
+        item.productId,
+        item.productName,
+        item.unitPrice,
+        item.quantity,
+        0,
+        item.lineTotal
+      );
+    }
+  }
+
+  for (const visit of legacyVisits) {
+    const transactionId = visit.id;
+    const receiptNo = `T-${visit.createdAt.slice(0, 10).replaceAll('-', '')}-${visit.id.slice(0, 8).toUpperCase()}`;
+    const customerName = visit.customerName?.trim() || 'Walk-in';
+    const total = money(visit.amount);
+
+    insertTransaction.run(
+      transactionId,
+      receiptNo,
+      visit.customerId,
+      customerName,
+      'Legacy',
+      total,
+      0,
+      0,
+      total,
+      visit.source === 'bill' ? 'Cash' : 'Cash',
+      visit.pointsEarned,
+      1,
+      visit.createdAt,
+      'visit',
+      visit.id
+    );
+
+    insertTransactionItem.run(
+      `visit-${visit.id}`,
+      transactionId,
+      'service',
+      visit.serviceId,
+      visit.serviceName,
+      visit.amount,
+      1,
+      0,
+      visit.amount
+    );
+  }
 }
 
 function readSetting<T>(key: string, fallback: T): T {
@@ -485,9 +800,20 @@ function saveSetting(key: string, value: unknown) {
 }
 
 export function getSettings(): AppSettingsSnapshot {
+  const storedLoyalty = readSetting<Partial<LoyaltyRulesSettings>>(LOYALTY_RULES_KEY, defaultLoyaltyRules);
+  // Normalize so older stored settings (or missing fields) always resolve to valid values.
+  const loyaltyRules: LoyaltyRulesSettings = {
+    currencyPerPoint:
+      Number.isFinite(storedLoyalty.currencyPerPoint) && Number(storedLoyalty.currencyPerPoint) >= 1
+        ? Number(storedLoyalty.currencyPerPoint)
+        : defaultLoyaltyRules.currencyPerPoint,
+    minimumRedeemPoints: Number.isFinite(storedLoyalty.minimumRedeemPoints)
+      ? Math.max(0, Math.trunc(Number(storedLoyalty.minimumRedeemPoints)))
+      : defaultLoyaltyRules.minimumRedeemPoints,
+  };
   return {
     salonInfo: readSetting(SALON_INFO_KEY, defaultSalonInfo),
-    loyaltyRules: readSetting(LOYALTY_RULES_KEY, defaultLoyaltyRules),
+    loyaltyRules,
   };
 }
 
@@ -506,13 +832,11 @@ export function updateSalonInfo(payload: Partial<SalonInfoSettings>) {
 
 export function updateLoyaltyRules(payload: Partial<LoyaltyRulesSettings>) {
   const current = getSettings().loyaltyRules;
-  const next = {
-    pointsPer100Currency: Number.isFinite(payload.pointsPer100Currency)
-      ? Math.max(0, Number(payload.pointsPer100Currency))
-      : current.pointsPer100Currency,
-    redemptionValuePerPoint: Number.isFinite(payload.redemptionValuePerPoint)
-      ? Math.max(0, Number(payload.redemptionValuePerPoint))
-      : current.redemptionValuePerPoint,
+  const next: LoyaltyRulesSettings = {
+    // Must be at least 1 currency unit per point (used as a divisor when earning).
+    currencyPerPoint: Number.isFinite(payload.currencyPerPoint)
+      ? Math.max(1, Number(payload.currencyPerPoint))
+      : current.currencyPerPoint,
     minimumRedeemPoints: Number.isFinite(payload.minimumRedeemPoints)
       ? Math.max(0, Math.trunc(Number(payload.minimumRedeemPoints)))
       : current.minimumRedeemPoints,
@@ -521,41 +845,87 @@ export function updateLoyaltyRules(payload: Partial<LoyaltyRulesSettings>) {
   return next;
 }
 
+// List all user tables (excludes SQLite internal tables).
+function listUserTables(db: InstanceType<typeof Database>): string[] {
+  return (
+    db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+      .all() as Array<{ name: string }>
+  ).map((row) => row.name);
+}
+
+// Backup = export every table to its own sheet in an .xlsx workbook.
 export function backupDatabase(destinationPath: string) {
-  const dbPath = getDatabasePath();
   const db = getDatabase();
-  db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+  const workbook = XLSX.utils.book_new();
+
+  for (const table of listUserTables(db)) {
+    const rows = db.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
+    const sheet = XLSX.utils.json_to_sheet(rows);
+    // Sheet names are capped at 31 chars; all our table names are shorter.
+    XLSX.utils.book_append_sheet(workbook, sheet, table.slice(0, 31));
+  }
+
+  // A workbook must contain at least one sheet.
+  if (workbook.SheetNames.length === 0) {
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([['empty']]), 'info');
+  }
+
   fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
-  fs.copyFileSync(dbPath, destinationPath);
+  XLSX.writeFile(workbook, destinationPath);
   return destinationPath;
 }
 
+// Restore = read the .xlsx workbook and replace each matching table's rows.
 export function restoreDatabase(sourcePath: string) {
-  const dbPath = getDatabasePath();
-
   if (!fs.existsSync(sourcePath)) {
     throw new Error('Backup file not found');
   }
 
-  if (database) {
-    database.close();
-    database = null;
+  const db = getDatabase();
+  const workbook = XLSX.readFile(sourcePath);
+
+  // Valid columns for each existing table, so we only insert known columns.
+  const tableColumns = new Map<string, Set<string>>();
+  for (const table of listUserTables(db)) {
+    const columns = (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
+      (column) => column.name
+    );
+    tableColumns.set(table, new Set(columns));
   }
 
-  fs.copyFileSync(sourcePath, dbPath);
-  for (const suffix of ['-wal', '-shm']) {
-    const journalPath = `${dbPath}${suffix}`;
-    if (fs.existsSync(journalPath)) {
-      fs.rmSync(journalPath, { force: true });
+  const matchingSheets = workbook.SheetNames.filter((name) => tableColumns.has(name));
+  if (matchingSheets.length === 0) {
+    // No sheet matched any table — this is almost certainly not a valid backup.
+    throw new Error('This file does not look like an Offline POS backup.');
+  }
+
+  let rowsRestored = 0;
+  const runRestore = db.transaction(() => {
+    for (const sheetName of matchingSheets) {
+      const columns = tableColumns.get(sheetName)!;
+      const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]) as Record<string, unknown>[];
+      db.prepare(`DELETE FROM ${sheetName}`).run();
+
+      for (const row of rows) {
+        const keys = Object.keys(row).filter((key) => columns.has(key));
+        if (keys.length === 0) continue;
+        const placeholders = keys.map(() => '?').join(', ');
+        const values = keys.map((key) => (row[key] === undefined ? null : row[key]));
+        db.prepare(`INSERT INTO ${sheetName} (${keys.join(', ')}) VALUES (${placeholders})`).run(
+          ...(values as (string | number | null)[])
+        );
+        rowsRestored += 1;
+      }
     }
-  }
+  });
 
-  initialized = false;
-  initDb();
+  runRestore();
 
   return {
     restoredFrom: sourcePath,
-    databasePath: dbPath,
+    tablesRestored: matchingSheets.length,
+    rowsRestored,
   };
 }
 
@@ -568,10 +938,18 @@ export function listProducts(): Product[] {
 export function getStats() {
   const db = getDatabase();
   const revenueToday = db
-    .prepare(`SELECT COALESCE(SUM(amount), 0) as total FROM visits WHERE date(createdAt) = date('now')`)
+    .prepare(`SELECT COALESCE(SUM(grandTotal), 0) as total FROM transactions WHERE date(createdAt) = date('now')`)
     .get() as { total: number };
+  const receiptCount = db
+    .prepare(`SELECT COUNT(*) as count FROM transactions WHERE date(createdAt) = date('now')`)
+    .get() as { count: number };
   const visitsToday = db
-    .prepare(`SELECT COUNT(*) as count FROM visits WHERE date(createdAt) = date('now')`)
+    .prepare(
+      `SELECT COUNT(DISTINCT t.id) as count
+       FROM transactions t
+       JOIN transaction_items ti ON ti.transactionId = t.id
+       WHERE ti.itemType = 'service' AND date(t.createdAt) = date('now')`
+    )
     .get() as { count: number };
   const productCount = db
     .prepare('SELECT COUNT(*) as count FROM products WHERE isActive = 1')
@@ -583,26 +961,50 @@ export function getStats() {
     .prepare('SELECT COALESCE(SUM(loyaltyPoints), 0) as total FROM customers WHERE isActive = 1')
     .get() as { total: number };
   const pointsEarnedToday = db
-    .prepare(`SELECT COALESCE(SUM(pointsEarned), 0) as total FROM visits WHERE date(createdAt) = date('now')`)
+    .prepare(
+      `SELECT COALESCE(SUM(loyaltyPointsEarned), 0) as total
+       FROM transactions
+       WHERE date(createdAt) = date('now')`
+    )
     .get() as { total: number };
   const monthlyRevenue = db
-    .prepare(`SELECT COALESCE(SUM(amount), 0) as total FROM visits WHERE strftime('%Y-%m', createdAt) = strftime('%Y-%m', 'now')`)
+    .prepare(
+      `SELECT COALESCE(SUM(grandTotal), 0) as total
+       FROM transactions
+       WHERE strftime('%Y-%m', createdAt) = strftime('%Y-%m', 'now')`
+    )
     .get() as { total: number };
   const pendingSync = db
     .prepare(`SELECT COUNT(*) as count FROM sync_queue WHERE status = 'pending'`)
     .get() as { count: number };
   const recentVisits = db
     .prepare(
-      `SELECT id, customerId, customerName, serviceId, serviceCode, serviceName, servicePrice, amount, priceOverride, pointsEarned, notes, createdAt, source
-       FROM visits
-       ORDER BY createdAt DESC
+      `SELECT
+        t.id,
+        t.customerId,
+        t.customerName,
+        NULL as serviceId,
+        NULL as serviceCode,
+        GROUP_CONCAT(ti.name, ', ') as serviceName,
+        COALESCE(SUM(ti.price * ti.qty), 0) as servicePrice,
+        COALESCE(SUM(ti.lineTotal), 0) as amount,
+        0 as priceOverride,
+        t.loyaltyPointsEarned as pointsEarned,
+        NULL as notes,
+        t.createdAt,
+        'transaction' as source
+       FROM transactions t
+       JOIN transaction_items ti ON ti.transactionId = t.id
+       WHERE ti.itemType = 'service'
+       GROUP BY t.id
+       ORDER BY t.createdAt DESC
        LIMIT 6`
     )
     .all() as VisitRecord[];
 
   return {
     salesToday: money(revenueToday.total),
-    receiptCount: visitsToday.count,
+    receiptCount: receiptCount.count,
     productCount: productCount.count,
     customerCount: customerCount.count,
     visitsToday: visitsToday.count,
@@ -618,72 +1020,182 @@ export function getStats() {
   };
 }
 
-export function createSale(payload: {
+export function createTransaction(payload: {
   cashierName: string;
   paymentMethod: string;
   discountTotal?: number;
-  items: Array<{ productId: string; quantity: number }>;
+  customerId?: string | null;
+  customerName?: string;
+  originType?: string;
+  originId?: string | null;
+  items: TransactionLineInput[];
 }) {
   const db = getDatabase();
-  const loadedProducts = db
-    .prepare('SELECT * FROM products WHERE id IN (' + payload.items.map(() => '?').join(',') + ')')
-    .all(...payload.items.map((item) => item.productId)) as Product[];
-
-  const byId = new Map(loadedProducts.map((product) => [product.id, product]));
-
-  const detailedItems: CartItem[] = payload.items.map((item) => {
-    const product = byId.get(item.productId);
-    if (!product) throw new Error('Product not found');
-    if (item.quantity > product.stock) {
-      throw new Error(`Not enough stock for ${product.name}`);
-    }
-    const lineTotal = money(product.price * item.quantity);
-    return { ...product, quantity: item.quantity, lineTotal };
+  const normalizedItems = payload.items.map((item) => {
+    const qty = Math.trunc(item.qty ?? 1);
+    if (!Number.isFinite(item.price)) throw new Error('Item price must be valid');
+    if (!Number.isFinite(item.taxRate ?? 0)) throw new Error('Item tax rate must be valid');
+    if (qty <= 0) throw new Error('Quantity must be greater than zero');
+    return {
+      type: item.type,
+      itemId: item.itemId?.trim() || null,
+      name: item.name?.trim() || '',
+      price: money(item.price),
+      qty,
+      taxRate: money(item.taxRate ?? 0),
+    };
   });
-  const saleItemRows = detailedItems.map((item) => ({
-    id: crypto.randomUUID(),
-    productId: item.id,
-    productName: item.name,
-    quantity: item.quantity,
-    unitPrice: item.price,
-    lineTotal: item.lineTotal,
-  }));
 
-  const subtotal = money(detailedItems.reduce((sum, item) => sum + item.lineTotal, 0));
-  const taxTotal = money(
-    detailedItems.reduce((sum, item) => sum + item.lineTotal * item.taxRate, 0)
-  );
+  if (normalizedItems.length === 0) {
+    throw new Error('At least one item is required');
+  }
+
+  const productIds = normalizedItems
+    .filter((item) => item.type === 'product' && item.itemId)
+    .map((item) => item.itemId as string);
+  const serviceIds = normalizedItems
+    .filter((item) => item.type === 'service' && item.itemId)
+    .map((item) => item.itemId as string);
+
+  const loadedProducts = productIds.length
+    ? (db
+        .prepare(`SELECT id, sku, barcode, name, category, price, stock, taxRate, isActive FROM products WHERE id IN (${productIds.map(() => '?').join(',')})`)
+        .all(...productIds) as Product[])
+    : [];
+  const loadedServices = serviceIds.length
+    ? (db
+        .prepare(`SELECT id, code, name, description, price, isActive FROM services WHERE id IN (${serviceIds.map(() => '?').join(',')})`)
+        .all(...serviceIds) as ServiceRecord[])
+    : [];
+
+  const productById = new Map(loadedProducts.map((product) => [product.id, product]));
+  const serviceById = new Map(loadedServices.map((service) => [service.id, service]));
+
+  const detailedItems: TransactionItemRecord[] = [];
+  let subtotal = 0;
+  let taxTotal = 0;
+  let loyaltyPointsEarned = 0;
+  let serviceSubtotal = 0;
+
+  for (const item of normalizedItems) {
+    if (item.type === 'product') {
+      if (!item.itemId) throw new Error('Product item id is required');
+      const product = productById.get(item.itemId);
+      if (!product || product.isActive === 0) throw new Error('Product not found');
+      if (item.qty > product.stock) {
+        throw new Error(`Not enough stock for ${product.name}`);
+      }
+      const resolvedPrice = item.price > 0 ? item.price : product.price;
+      const resolvedTaxRate = item.name ? item.taxRate : product.taxRate;
+      const resolvedName = item.name || product.name;
+      const lineTotal = money(resolvedPrice * item.qty);
+      detailedItems.push({
+        id: crypto.randomUUID(),
+        transactionId: '',
+        itemType: 'product',
+        itemId: product.id,
+        name: resolvedName,
+        price: resolvedPrice,
+        qty: item.qty,
+        taxRate: resolvedTaxRate,
+        lineTotal,
+      });
+    } else {
+      const service = item.itemId ? serviceById.get(item.itemId) : undefined;
+      if (item.itemId && (!service || service.isActive === 0)) throw new Error('Service package not found');
+      const resolvedPrice = item.price > 0 ? item.price : service?.price ?? 0;
+      const resolvedName = item.name || service?.name || 'Service';
+      const resolvedItemId = item.itemId || service?.id || null;
+      const lineTotal = money(resolvedPrice * item.qty);
+      detailedItems.push({
+        id: crypto.randomUUID(),
+        transactionId: '',
+        itemType: 'service',
+        itemId: resolvedItemId,
+        name: resolvedName,
+        price: resolvedPrice,
+        qty: item.qty,
+        taxRate: item.taxRate,
+        lineTotal,
+      });
+      serviceSubtotal += lineTotal;
+    }
+  }
+
+  // Points are earned on services only, using the configurable conversion rate
+  // (currencyPerPoint PKR of service spend = 1 point).
+  const currencyPerPoint = Math.max(1, getSettings().loyaltyRules.currencyPerPoint);
+  loyaltyPointsEarned = Math.max(0, Math.floor(serviceSubtotal / currencyPerPoint));
+
+  subtotal = money(detailedItems.reduce((sum, item) => sum + item.lineTotal, 0));
+  taxTotal = money(detailedItems.reduce((sum, item) => sum + item.lineTotal * item.taxRate, 0));
   const discountTotal = money(payload.discountTotal ?? 0);
   const grandTotal = money(subtotal + taxTotal - discountTotal);
 
-  const saleId = crypto.randomUUID();
-  const saleCount = db.prepare('SELECT COUNT(*) as count FROM sales').get() as { count: number };
-  const receiptNo = `R-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${String(
-    saleCount.count + 1
+  const transactionId = crypto.randomUUID();
+  const transactionCount = db.prepare('SELECT COUNT(*) as count FROM transactions').get() as { count: number };
+  const receiptNo = `T-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${String(
+    transactionCount.count + 1
   ).padStart(5, '0')}`;
   const createdAt = new Date().toISOString();
+  const customerId = payload.customerId?.trim() || null;
+  const customer = customerId
+    ? (db
+        .prepare('SELECT id, name, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive FROM customers WHERE id = ?')
+        .get(customerId) as CustomerRecord | undefined)
+    : undefined;
+
+  if (customerId && !customer) throw new Error('Customer not found');
+
+  const customerName = customer?.name ?? payload.customerName?.trim() ?? 'Walk-in';
+  const cashierName = payload.cashierName.trim();
+  if (!cashierName) throw new Error('Cashier name is required');
+  if (!payload.paymentMethod.trim()) throw new Error('Payment method is required');
 
   const transaction = db.transaction(() => {
+    const originType = payload.originType?.trim() || 'checkout';
+    const originId = payload.originId?.trim() || transactionId;
+
     db.prepare(`
-      INSERT INTO sales
-      (id, receiptNo, cashierName, subtotal, taxTotal, discountTotal, grandTotal, paymentMethod, itemCount, createdAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO transactions (
+        id,
+        receiptNo,
+        customerId,
+        customerName,
+        cashierName,
+        subtotal,
+        taxTotal,
+        discountTotal,
+        grandTotal,
+        paymentMethod,
+        loyaltyPointsEarned,
+        itemCount,
+        createdAt,
+        originType,
+        originId
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      saleId,
+      transactionId,
       receiptNo,
-      payload.cashierName,
+      customerId,
+      customerName,
+      cashierName,
       subtotal,
       taxTotal,
       discountTotal,
       grandTotal,
-      payload.paymentMethod,
+      payload.paymentMethod.trim(),
+      loyaltyPointsEarned,
       detailedItems.length,
-      createdAt
+      createdAt,
+      originType,
+      originId
     );
 
     const insertItem = db.prepare(`
-      INSERT INTO sale_items (id, saleId, productId, productName, quantity, unitPrice, lineTotal)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO transaction_items (id, transactionId, itemType, itemId, name, price, qty, taxRate, lineTotal)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const updateStock = db.prepare('UPDATE products SET stock = stock - ? WHERE id = ?');
     const insertMovement = db.prepare(`
@@ -694,69 +1206,74 @@ export function createSale(payload: {
       INSERT INTO sync_queue (id, entityType, entityId, payload, status, createdAt)
       VALUES (?, ?, ?, ?, 'pending', ?)
     `);
-    const visitId = crypto.randomUUID();
 
-    for (const item of saleItemRows) {
+    for (const item of detailedItems) {
       insertItem.run(
         item.id,
-        saleId,
-        item.productId,
-        item.productName,
-        item.quantity,
-        item.unitPrice,
+        transactionId,
+        item.itemType,
+        item.itemId,
+        item.name,
+        item.price,
+        item.qty,
+        item.taxRate,
         item.lineTotal
       );
-      updateStock.run(item.quantity, item.productId);
-      insertMovement.run(crypto.randomUUID(), item.productId, -item.quantity, 'sale', createdAt);
+      item.transactionId = transactionId;
+
+      if (item.itemType === 'product' && item.itemId) {
+        updateStock.run(item.qty, item.itemId);
+        insertMovement.run(crypto.randomUUID(), item.itemId, -item.qty, 'transaction', createdAt);
+      }
     }
 
-    db.prepare(`
-      INSERT INTO visits (id, customerId, customerName, serviceName, amount, pointsEarned, notes, createdAt, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      visitId,
-      null,
-      'Walk-in',
-      `POS Sale (${payload.paymentMethod})`,
-      grandTotal,
-      0,
-      null,
-      createdAt,
-      'sale'
-    );
+    if (customerId) {
+      // Every transaction for a known customer counts as a visit.
+      db.prepare(`
+        UPDATE customers
+        SET loyaltyPoints = loyaltyPoints + ?,
+            visitsCount = visitsCount + 1,
+            lastVisitAt = ?
+        WHERE id = ?
+      `).run(loyaltyPointsEarned, createdAt, customerId);
+
+      // Points are only earned from services (loyaltyPointsEarned > 0).
+      if (loyaltyPointsEarned > 0) {
+        db.prepare(`
+          INSERT INTO loyalty_transactions (id, customerId, customerName, transactionType, points, notes, createdAt)
+          VALUES (?, ?, ?, 'earn', ?, ?, ?)
+        `).run(
+          crypto.randomUUID(),
+          customerId,
+          customerName,
+          loyaltyPointsEarned,
+          `Earned from transaction ${receiptNo}`,
+          createdAt
+        );
+      }
+    }
 
     queue.run(
       crypto.randomUUID(),
-      'sale',
-      saleId,
+      'transaction',
+      transactionId,
       JSON.stringify({
-        saleId,
+        id: transactionId,
         receiptNo,
-        cashierName: payload.cashierName,
-        paymentMethod: payload.paymentMethod,
+        customerId,
+        customerName,
+        cashierName,
         subtotal,
         taxTotal,
         discountTotal,
         grandTotal,
-        detailedItems: saleItemRows,
+        paymentMethod: payload.paymentMethod.trim(),
+        loyaltyPointsEarned,
+        itemCount: detailedItems.length,
         createdAt,
-      }),
-      createdAt
-    );
-    queue.run(
-      crypto.randomUUID(),
-      'visit',
-      visitId,
-      JSON.stringify({
-        id: visitId,
-        customerId: null,
-        customerName: 'Walk-in',
-        serviceName: `POS Sale (${payload.paymentMethod})`,
-        amount: grandTotal,
-        pointsEarned: 0,
-        notes: null,
-        createdAt,
-        source: 'sale',
+        originType,
+        originId,
+        detailedItems,
       }),
       createdAt
     );
@@ -765,26 +1282,57 @@ export function createSale(payload: {
   transaction();
 
   return {
-    id: saleId,
+    id: transactionId,
     receiptNo,
+    customerId,
+    customerName,
+    cashierName,
     subtotal,
     taxTotal,
     discountTotal,
     grandTotal,
-    createdAt,
+    paymentMethod: payload.paymentMethod.trim(),
+    loyaltyPointsEarned,
     itemCount: detailedItems.length,
-    cashierName: payload.cashierName,
-    paymentMethod: payload.paymentMethod,
-    detailedItems: saleItemRows,
+    createdAt,
+    originType: payload.originType?.trim() || 'checkout',
+    originId: payload.originId?.trim() || transactionId,
+    detailedItems,
   } satisfies SaleRecord;
 }
 
-export function getRecentSales(limit = 10) {
+export function createSale(payload: {
+  cashierName: string;
+  paymentMethod: string;
+  discountTotal?: number;
+  items: Array<{ productId: string; quantity: number }>;
+}) {
+  return createTransaction({
+    cashierName: payload.cashierName,
+    paymentMethod: payload.paymentMethod,
+    discountTotal: payload.discountTotal,
+    originType: 'sale',
+    items: payload.items.map((item) => ({
+      type: 'product',
+      itemId: item.productId,
+      name: '',
+      price: 0,
+      qty: item.quantity,
+      taxRate: 0,
+    })),
+  });
+}
+
+export function getRecentTransactions(limit = 10) {
   return getDatabase()
     .prepare(
-      'SELECT id, receiptNo, cashierName, subtotal, taxTotal, discountTotal, grandTotal, paymentMethod, itemCount, createdAt FROM sales ORDER BY createdAt DESC LIMIT ?'
+      'SELECT id, receiptNo, customerId, customerName, cashierName, subtotal, taxTotal, discountTotal, grandTotal, paymentMethod, loyaltyPointsEarned, itemCount, createdAt, originType, originId FROM transactions ORDER BY createdAt DESC LIMIT ?'
     )
     .all(limit) as SaleRecord[];
+}
+
+export function getRecentSales(limit = 10) {
+  return getRecentTransactions(limit);
 }
 
 export function getReports(): ReportsSnapshot {
@@ -797,14 +1345,14 @@ export function getReports(): ReportsSnapshot {
         COALESCE(SUM(grandTotal), 0) as totalRevenue,
         COALESCE(SUM(taxTotal), 0) as totalTax,
         COALESCE(SUM(discountTotal), 0) as totalDiscount
-       FROM sales`
+       FROM transactions`
     )
     .get() as { saleCount: number; totalRevenue: number; totalTax: number; totalDiscount: number };
 
   const topPaymentMethod = db
     .prepare(
       `SELECT paymentMethod, COUNT(*) as saleCount
-       FROM sales
+       FROM transactions
        GROUP BY paymentMethod
        ORDER BY saleCount DESC, paymentMethod ASC
        LIMIT 1`
@@ -814,7 +1362,7 @@ export function getReports(): ReportsSnapshot {
   const monthlyTrend = db
     .prepare(
       `SELECT strftime('%Y-%m', createdAt) as month, COALESCE(SUM(grandTotal), 0) as revenue, COUNT(*) as saleCount
-       FROM sales
+       FROM transactions
        GROUP BY month
        ORDER BY month DESC
        LIMIT 6`
@@ -823,7 +1371,25 @@ export function getReports(): ReportsSnapshot {
 
   const recentSales = db
     .prepare(
-      'SELECT id, receiptNo, cashierName, subtotal, taxTotal, discountTotal, grandTotal, paymentMethod, itemCount, createdAt FROM sales ORDER BY createdAt DESC LIMIT 8'
+      `SELECT
+        id,
+        receiptNo,
+        customerId,
+        customerName,
+        cashierName,
+        subtotal,
+        taxTotal,
+        discountTotal,
+        grandTotal,
+        paymentMethod,
+        loyaltyPointsEarned,
+        itemCount,
+        createdAt,
+        originType,
+        originId
+       FROM transactions
+       ORDER BY createdAt DESC
+       LIMIT 8`
     )
     .all() as SaleRecord[];
 
@@ -851,9 +1417,9 @@ export function getReports(): ReportsSnapshot {
         c.visitsCount,
         c.loyaltyPoints,
         c.lastVisitAt,
-        COALESCE(SUM(v.amount), 0) as totalSpent
+        COALESCE(SUM(t.grandTotal), 0) as totalSpent
        FROM customers c
-       LEFT JOIN visits v ON v.customerId = c.id
+       LEFT JOIN transactions t ON t.customerId = c.id
        WHERE c.isActive = 1
        GROUP BY c.id
        ORDER BY totalSpent DESC, c.visitsCount DESC, c.name ASC
@@ -871,11 +1437,13 @@ export function getReports(): ReportsSnapshot {
   const visitSummary = db
     .prepare(
       `SELECT
-        COUNT(*) as totalVisits,
-        COALESCE(SUM(CASE WHEN date(createdAt) = date('now') THEN 1 ELSE 0 END), 0) as visitsToday,
-        COALESCE(SUM(CASE WHEN source = 'manual' THEN 1 ELSE 0 END), 0) as manualVisits,
-        COALESCE(SUM(CASE WHEN source = 'sale' THEN 1 ELSE 0 END), 0) as saleVisits
-       FROM visits`
+        COUNT(DISTINCT t.id) as totalVisits,
+        COUNT(DISTINCT CASE WHEN date(t.createdAt) = date('now') THEN t.id END) as visitsToday,
+        COUNT(DISTINCT CASE WHEN t.originType = 'visit' THEN t.id END) as manualVisits,
+        COUNT(DISTINCT CASE WHEN t.originType = 'sale' THEN t.id END) as saleVisits
+       FROM transactions t
+       JOIN transaction_items ti ON ti.transactionId = t.id
+       WHERE ti.itemType = 'service'`
     )
     .get() as {
     totalVisits: number;
@@ -886,17 +1454,54 @@ export function getReports(): ReportsSnapshot {
 
   const topServices = db
     .prepare(
-      `SELECT serviceName, COUNT(*) as visitCount, COALESCE(SUM(amount), 0) as totalAmount
-       FROM visits
-       GROUP BY serviceName
+      `SELECT ti.name as serviceName, COUNT(*) as visitCount, COALESCE(SUM(ti.lineTotal), 0) as totalAmount
+       FROM transactions t
+       JOIN transaction_items ti ON ti.transactionId = t.id
+       WHERE ti.itemType = 'service'
+       GROUP BY ti.name
        ORDER BY visitCount DESC, totalAmount DESC, serviceName ASC
        LIMIT 8`
     )
     .all() as CustomerServiceSummary[];
 
+  const topProducts = db
+    .prepare(
+      `SELECT ti.name as productName, COALESCE(SUM(ti.qty), 0) as quantitySold, COALESCE(SUM(ti.lineTotal), 0) as totalAmount
+       FROM transactions t
+       JOIN transaction_items ti ON ti.transactionId = t.id
+       WHERE ti.itemType = 'product'
+       GROUP BY ti.name
+       ORDER BY quantitySold DESC, totalAmount DESC, productName ASC
+       LIMIT 8`
+    )
+    .all() as Array<{
+    productName: string;
+    quantitySold: number;
+    totalAmount: number;
+  }>;
+
   const recentVisits = db
     .prepare(
-      'SELECT id, customerId, customerName, serviceId, serviceCode, serviceName, servicePrice, amount, priceOverride, pointsEarned, notes, createdAt, source FROM visits ORDER BY createdAt DESC LIMIT 8'
+      `SELECT
+        t.id,
+        t.customerId,
+        t.customerName,
+        NULL as serviceId,
+        NULL as serviceCode,
+        GROUP_CONCAT(ti.name, ', ') as serviceName,
+        COALESCE(SUM(ti.price * ti.qty), 0) as servicePrice,
+        COALESCE(SUM(ti.lineTotal), 0) as amount,
+        0 as priceOverride,
+        t.loyaltyPointsEarned as pointsEarned,
+        NULL as notes,
+        t.createdAt,
+        t.originType as source
+       FROM transactions t
+       JOIN transaction_items ti ON ti.transactionId = t.id
+       WHERE ti.itemType = 'service'
+       GROUP BY t.id
+       ORDER BY t.createdAt DESC
+       LIMIT 8`
     )
     .all() as VisitRecord[];
 
@@ -953,6 +1558,7 @@ export function getReports(): ReportsSnapshot {
       totalDiscount: revenueSummary.totalDiscount,
       averageSaleValue: revenueSummary.saleCount > 0 ? money(revenueSummary.totalRevenue / revenueSummary.saleCount) : 0,
       topPaymentMethod: topPaymentMethod?.paymentMethod ?? 'Cash',
+      topProducts,
       monthlyTrend,
       recentSales,
     },
@@ -984,14 +1590,16 @@ export function getReports(): ReportsSnapshot {
 export function listInventory() {
   return getDatabase()
     .prepare(
-      'SELECT id, sku, barcode, name, category, price, stock, taxRate, isActive FROM products ORDER BY category, name'
+      'SELECT id, sku, barcode, name, category, price, stock, taxRate, redeemPoints, isActive FROM products ORDER BY category, name'
     )
     .all();
 }
 
 export function listServices(): ServiceRecord[] {
   return getDatabase()
-    .prepare('SELECT id, code, name, description, price, isActive FROM services WHERE isActive = 1 ORDER BY name')
+    .prepare(
+      'SELECT id, code, name, description, price, redeemPoints, isActive FROM services WHERE isActive = 1 ORDER BY name'
+    )
     .all() as ServiceRecord[];
 }
 
@@ -1003,6 +1611,7 @@ export function createProduct(payload: {
   price: number;
   stock: number;
   taxRate: number;
+  redeemPoints?: number;
 }) {
   const db = getDatabase();
   const sku = payload.sku.trim();
@@ -1033,12 +1642,13 @@ export function createProduct(payload: {
     price: money(payload.price),
     stock: Math.trunc(payload.stock),
     taxRate: payload.taxRate,
+    redeemPoints: Math.max(0, Math.trunc(payload.redeemPoints ?? 0)),
     isActive: 1,
   };
 
   db.prepare(`
-    INSERT INTO products (id, sku, barcode, name, category, price, stock, taxRate, isActive)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO products (id, sku, barcode, name, category, price, stock, taxRate, redeemPoints, isActive)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     product.id,
     product.sku,
@@ -1048,13 +1658,20 @@ export function createProduct(payload: {
     product.price,
     product.stock,
     product.taxRate,
+    product.redeemPoints,
     product.isActive
   );
 
   return product;
 }
 
-export function createService(payload: { code: string; name: string; description: string; price: number }) {
+export function createService(payload: {
+  code: string;
+  name: string;
+  description: string;
+  price: number;
+  redeemPoints?: number;
+}) {
   const db = getDatabase();
   const code = payload.code.trim();
   const name = payload.name.trim();
@@ -1064,6 +1681,7 @@ export function createService(payload: { code: string; name: string; description
     throw new Error('Code, name, and description are required');
   }
   if (payload.price < 0) throw new Error('Price cannot be negative');
+  const redeemPoints = Math.max(0, Math.trunc(payload.redeemPoints ?? 0));
 
   const existing = db
     .prepare('SELECT id FROM services WHERE code = ?')
@@ -1078,15 +1696,69 @@ export function createService(payload: { code: string; name: string; description
     name,
     description,
     price: money(payload.price),
+    redeemPoints,
     isActive: 1,
   };
 
   db.prepare(`
-    INSERT INTO services (id, code, name, description, price, isActive)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(service.id, service.code, service.name, service.description, service.price, service.isActive);
+    INSERT INTO services (id, code, name, description, price, redeemPoints, isActive)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    service.id,
+    service.code,
+    service.name,
+    service.description,
+    service.price,
+    service.redeemPoints,
+    service.isActive
+  );
 
   return service;
+}
+
+// All services including deleted ones (for the Services management page).
+export function listAllServices(): ServiceRecord[] {
+  return getDatabase()
+    .prepare(
+      'SELECT id, code, name, description, price, redeemPoints, isActive FROM services ORDER BY isActive DESC, name'
+    )
+    .all() as ServiceRecord[];
+}
+
+export function deleteService(payload: { serviceId: string }) {
+  const db = getDatabase();
+  const service = db
+    .prepare('SELECT id, name, isActive FROM services WHERE id = ?')
+    .get(payload.serviceId) as { id: string; name: string; isActive: number } | undefined;
+  if (!service) throw new Error('Service not found');
+  if (service.isActive === 0) throw new Error('Service is already deleted');
+
+  db.prepare('UPDATE services SET isActive = 0 WHERE id = ?').run(payload.serviceId);
+  return { serviceId: payload.serviceId, name: service.name, isActive: 0 };
+}
+
+export function restoreService(payload: { serviceId: string }) {
+  const db = getDatabase();
+  const service = db
+    .prepare('SELECT id, name, isActive FROM services WHERE id = ?')
+    .get(payload.serviceId) as { id: string; name: string; isActive: number } | undefined;
+  if (!service) throw new Error('Service not found');
+  if (service.isActive === 1) throw new Error('Service is already active');
+
+  db.prepare('UPDATE services SET isActive = 1 WHERE id = ?').run(payload.serviceId);
+  return { serviceId: payload.serviceId, name: service.name, isActive: 1 };
+}
+
+export function deleteServicePermanently(payload: { serviceId: string }) {
+  const db = getDatabase();
+  const service = db
+    .prepare('SELECT id, name, isActive FROM services WHERE id = ?')
+    .get(payload.serviceId) as { id: string; name: string; isActive: number } | undefined;
+  if (!service) throw new Error('Service not found');
+  if (service.isActive !== 0) throw new Error('Only already deleted services can be removed permanently');
+
+  db.prepare('DELETE FROM services WHERE id = ?').run(payload.serviceId);
+  return { serviceId: payload.serviceId, name: service.name, removed: true };
 }
 
 export function adjustInventory(payload: {
@@ -1306,27 +1978,74 @@ export function getCustomerProfile(customerId: string): CustomerProfile {
     .get(customerId) as CustomerRecord | undefined;
   if (!customer) throw new Error('Customer not found');
 
-  const recentVisits = db
+  // Full transaction ledger for this customer (newest first).
+  const transactions = db
     .prepare(
-      'SELECT id, customerId, customerName, serviceId, serviceCode, serviceName, servicePrice, amount, priceOverride, pointsEarned, notes, createdAt, source FROM visits WHERE customerId = ? ORDER BY createdAt DESC'
-    )
-    .all(customerId) as VisitRecord[];
-
-  const favoriteServices = db
-    .prepare(
-      `SELECT serviceName, COUNT(*) as visitCount, COALESCE(SUM(amount), 0) as totalAmount
-       FROM visits
+      `SELECT id, receiptNo, paymentMethod, grandTotal, itemCount, loyaltyPointsEarned, createdAt
+       FROM transactions
        WHERE customerId = ?
-       GROUP BY serviceName
-       ORDER BY visitCount DESC, totalAmount DESC, serviceName ASC
-       LIMIT 5`
+       ORDER BY createdAt DESC`
     )
-    .all(customerId) as CustomerServiceSummary[];
+    .all(customerId) as Array<{
+    id: string;
+    receiptNo: string;
+    paymentMethod: string;
+    grandTotal: number;
+    itemCount: number;
+    loyaltyPointsEarned: number;
+    createdAt: string;
+  }>;
+
+  const transactionItems = db
+    .prepare(
+      `SELECT ti.transactionId, ti.itemType, ti.name, ti.qty, ti.price, ti.lineTotal
+       FROM transaction_items ti
+       JOIN transactions t ON t.id = ti.transactionId
+       WHERE t.customerId = ?`
+    )
+    .all(customerId) as Array<{
+    transactionId: string;
+    itemType: 'product' | 'service';
+    name: string;
+    qty: number;
+    price: number;
+    lineTotal: number;
+  }>;
+
+  const itemsByTransaction = new Map<string, LedgerItem[]>();
+  for (const item of transactionItems) {
+    const list = itemsByTransaction.get(item.transactionId) ?? [];
+    list.push({
+      itemType: item.itemType,
+      name: item.name,
+      qty: item.qty,
+      price: item.price,
+      lineTotal: item.lineTotal,
+    });
+    itemsByTransaction.set(item.transactionId, list);
+  }
+
+  const ledger: LedgerEntry[] = transactions.map((t) => ({
+    id: t.id,
+    receiptNo: t.receiptNo,
+    createdAt: t.createdAt,
+    paymentMethod: t.paymentMethod,
+    grandTotal: t.grandTotal,
+    itemCount: t.itemCount,
+    pointsEarned: t.loyaltyPointsEarned,
+    items: itemsByTransaction.get(t.id) ?? [],
+  }));
+
+  // Services from the most recent visit that actually included services.
+  const lastVisitServices =
+    ledger.find((entry) => entry.items.some((item) => item.itemType === 'service'))?.items.filter(
+      (item) => item.itemType === 'service'
+    ) ?? [];
 
   const pointsEarnedTotal = db
     .prepare(
-      `SELECT COALESCE(SUM(pointsEarned), 0) as total
-       FROM visits
+      `SELECT COALESCE(SUM(loyaltyPointsEarned), 0) as total
+       FROM transactions
        WHERE customerId = ?`
     )
     .get(customerId) as { total: number };
@@ -1339,22 +2058,12 @@ export function getCustomerProfile(customerId: string): CustomerProfile {
     )
     .get(customerId) as { total: number };
 
-  const loyaltyTransactions = db
-    .prepare(
-      `SELECT id, customerId, customerName, transactionType, points, notes, createdAt
-       FROM loyalty_transactions
-       WHERE customerId = ?
-       ORDER BY createdAt DESC`
-    )
-    .all(customerId) as LoyaltyTransactionRecord[];
-
   return {
     customer,
-    recentVisits,
-    favoriteServices,
+    lastVisitServices,
     pointsEarnedTotal: pointsEarnedTotal.total,
     pointsRedeemedTotal: pointsRedeemedTotal.total,
-    loyaltyTransactions,
+    ledger,
   };
 }
 
@@ -1367,180 +2076,37 @@ export function createVisit(payload: {
   notes?: string;
   source?: string;
 }) {
-  const db = getDatabase();
-  const loyaltyRules = getSettings().loyaltyRules;
-  const serviceId = payload.serviceId?.trim() || null;
-  const amountInput = typeof payload.amount === 'number' ? payload.amount : null;
-
-  const customerId = payload.customerId?.trim() || null;
-  let customerName = payload.customerName?.trim() || 'Walk-in';
-  let serviceCode: string | null = null;
-  let serviceName = payload.serviceName?.trim() || '';
-  let servicePrice = 0;
-  let amount = amountInput ?? 0;
-
-  if (serviceId) {
-    const service = db
-      .prepare('SELECT id, code, name, price FROM services WHERE id = ? AND isActive = 1')
-      .get(serviceId) as { id: string; code: string; name: string; price: number } | undefined;
-    if (!service) throw new Error('Service package not found');
-    serviceName = service.name;
-    serviceCode = service.code;
-    servicePrice = service.price;
-    amount = amountInput ?? service.price;
-  }
-
-  if (!serviceName) throw new Error('Service name is required');
-  if (amount < 0) throw new Error('Amount cannot be negative');
-
-  if (!serviceId && amountInput === null) {
-    throw new Error('Amount is required when no service package is selected');
-  }
-  if (!Number.isFinite(amount)) throw new Error('Amount must be a valid number');
-
-  const priceOverride = serviceId && Math.round(amount * 100) / 100 !== Math.round(servicePrice * 100) / 100 ? 1 : 0;
-  const pointsPer100 = loyaltyRules.pointsPer100Currency;
-  let pointsEarned = amount > 0 ? Math.max(0, Math.floor(amount / 100) * pointsPer100) : 0;
-
-  if (customerId) {
-    const customer = db
-      .prepare('SELECT id, name, loyaltyPoints, visitsCount FROM customers WHERE id = ? AND isActive = 1')
-      .get(customerId) as { id: string; name: string; loyaltyPoints: number; visitsCount: number } | undefined;
-    if (!customer) throw new Error('Customer not found');
-    customerName = customer.name;
-  } else {
-    pointsEarned = 0;
-  }
-
-  const id = crypto.randomUUID();
-  const createdAt = new Date().toISOString();
-  const notes = payload.notes?.trim() || null;
-  const source = payload.source?.trim() || 'manual';
-
-  const tx = db.transaction(() => {
-    db.prepare(`
-      INSERT INTO visits (
-        id,
-        customerId,
-        customerName,
-        serviceId,
-        serviceCode,
-        serviceName,
-        servicePrice,
-        amount,
-        priceOverride,
-        pointsEarned,
-        notes,
-        createdAt,
-        source
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id,
-      customerId,
-      customerName,
-      serviceId,
-      serviceCode,
-      serviceName,
-      servicePrice,
-      amount,
-      priceOverride,
-      pointsEarned,
-      notes,
-      createdAt,
-      source
-    );
-
-    if (customerId && pointsEarned > 0) {
-      db.prepare(`
-        UPDATE customers
-        SET loyaltyPoints = loyaltyPoints + ?,
-            visitsCount = visitsCount + 1,
-            lastVisitAt = ?
-        WHERE id = ?
-      `).run(pointsEarned, createdAt, customerId);
-      db.prepare(`
-        INSERT INTO loyalty_transactions (id, customerId, customerName, transactionType, points, notes, createdAt)
-        VALUES (?, ?, ?, 'earn', ?, ?, ?)
-      `).run(
-        crypto.randomUUID(),
-        customerId,
-        customerName,
-        pointsEarned,
-        `Earned from ${serviceName}`,
-        createdAt
-      );
-    } else if (customerId) {
-      db.prepare(`
-        UPDATE customers
-        SET visitsCount = visitsCount + 1,
-            lastVisitAt = ?
-        WHERE id = ?
-      `).run(createdAt, customerId);
-    }
-
-    db.prepare(`
-      INSERT INTO sync_queue (id, entityType, entityId, payload, status, createdAt)
-      VALUES (?, ?, ?, ?, 'pending', ?)
-    `).run(
-      crypto.randomUUID(),
-      'visit',
-      id,
-      JSON.stringify({
-        id,
-        customerId,
-        customerName,
-        serviceId,
-        serviceCode,
-        serviceName,
-        servicePrice,
-        amount,
-        priceOverride,
-        pointsEarned,
-        notes,
-        createdAt,
-        source,
-      }),
-      createdAt
-    );
-
-    if (customerId) {
-    const customer = db
-        .prepare('SELECT id, name, phone, email, notes, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive FROM customers WHERE id = ?')
-        .get(customerId) as CustomerRecord | undefined;
-      if (customer) {
-        db.prepare(`
-          INSERT INTO sync_queue (id, entityType, entityId, payload, status, createdAt)
-          VALUES (?, ?, ?, ?, 'pending', ?)
-        `).run(
-          crypto.randomUUID(),
-          'customer',
-          customerId,
-          JSON.stringify({
-            ...customer,
-          }),
-          createdAt
-        );
-      }
-    }
+  const result = createTransaction({
+    cashierName: 'Legacy',
+    paymentMethod: 'Cash',
+    customerId: payload.customerId ?? null,
+    customerName: payload.customerName,
+    items: [
+      {
+        type: 'service',
+        itemId: payload.serviceId ?? null,
+        name: payload.serviceName ?? '',
+        price: payload.amount ?? 0,
+        qty: 1,
+        taxRate: 0,
+      },
+    ],
   });
 
-  tx();
-
   return {
-    id,
-    customerId,
-    customerName,
-    serviceId,
-    serviceCode,
-    serviceName,
-    servicePrice,
-    amount,
-    priceOverride,
-    pointsEarned,
-    notes,
-    createdAt,
-    source,
+    id: result.id,
+    customerId: result.customerId,
+    customerName: result.customerName,
+    serviceId: result.detailedItems?.[0]?.itemId ?? null,
+    serviceCode: null,
+    serviceName: result.detailedItems?.map((item) => item.name).join(', ') ?? '',
+    servicePrice: result.detailedItems?.[0]?.price ?? 0,
+    amount: result.grandTotal,
+    priceOverride: 0,
+    pointsEarned: result.loyaltyPointsEarned,
+    notes: payload.notes?.trim() || null,
+    createdAt: result.createdAt,
+    source: payload.source?.trim() || 'transaction',
   } satisfies VisitRecord;
 }
 
@@ -1567,25 +2133,30 @@ export function createBill(payload: {
     }))
     .filter((service) => service.serviceName && Number.isFinite(service.price));
 
-  if (services.length > 0) {
-    const serviceName = services.map((service) => service.serviceName).join(', ');
-    const amount = services.reduce((sum, service) => sum + service.price, 0);
-
-    return createVisit({
-      customerId: payload.customerId,
-      customerName: payload.customerName,
-      serviceId: services.length === 1 ? services[0].serviceId : null,
-      serviceName,
-      amount,
-      notes: payload.notes,
-      source: 'bill',
-    });
-  }
-
-  return createVisit({
-    ...payload,
-    source: 'bill',
-  });
+  return createTransaction({
+    cashierName: 'Legacy',
+    paymentMethod: 'Cash',
+    customerId: payload.customerId ?? null,
+    customerName: payload.customerName,
+    items: (services.length > 0
+      ? services
+      : [
+          {
+            serviceId: payload.serviceId?.trim() || null,
+            serviceCode: null,
+            serviceName: payload.serviceName?.trim() || '',
+            price: payload.amount ?? 0,
+          },
+        ]
+    ).map((service) => ({
+      type: 'service',
+      itemId: service.serviceId,
+      name: service.serviceName,
+      price: service.price,
+      qty: 1,
+      taxRate: 0,
+    })),
+  }) satisfies SaleRecord;
 }
 
 export function redeemCustomerPoints(payload: { customerId: string; points: number; notes?: string }) {
@@ -1630,7 +2201,26 @@ export function redeemCustomerPoints(payload: { customerId: string; points: numb
 export function getRecentVisits(limit = 8) {
   return getDatabase()
     .prepare(
-      'SELECT id, customerId, customerName, serviceId, serviceCode, serviceName, servicePrice, amount, priceOverride, pointsEarned, notes, createdAt, source FROM visits ORDER BY createdAt DESC LIMIT ?'
+      `SELECT
+        t.id,
+        t.customerId,
+        t.customerName,
+        NULL as serviceId,
+        NULL as serviceCode,
+        GROUP_CONCAT(ti.name, ', ') as serviceName,
+        COALESCE(SUM(ti.price * ti.qty), 0) as servicePrice,
+        COALESCE(SUM(ti.lineTotal), 0) as amount,
+        0 as priceOverride,
+        t.loyaltyPointsEarned as pointsEarned,
+        NULL as notes,
+        t.createdAt,
+        t.originType as source
+       FROM transactions t
+       JOIN transaction_items ti ON ti.transactionId = t.id
+       WHERE ti.itemType = 'service'
+       GROUP BY t.id
+       ORDER BY t.createdAt DESC
+       LIMIT ?`
     )
     .all(limit) as VisitRecord[];
 }
@@ -1638,7 +2228,26 @@ export function getRecentVisits(limit = 8) {
 export function getRecentBills(limit = 10) {
   return getDatabase()
     .prepare(
-      "SELECT id, customerId, customerName, serviceId, serviceCode, serviceName, servicePrice, amount, priceOverride, pointsEarned, notes, createdAt, source FROM visits WHERE source = 'bill' ORDER BY createdAt DESC LIMIT ?"
+      `SELECT
+        t.id,
+        t.customerId,
+        t.customerName,
+        NULL as serviceId,
+        NULL as serviceCode,
+        GROUP_CONCAT(ti.name, ', ') as serviceName,
+        COALESCE(SUM(ti.price * ti.qty), 0) as servicePrice,
+        COALESCE(SUM(ti.lineTotal), 0) as amount,
+        0 as priceOverride,
+        t.loyaltyPointsEarned as pointsEarned,
+        NULL as notes,
+        t.createdAt,
+        t.originType as source
+       FROM transactions t
+       JOIN transaction_items ti ON ti.transactionId = t.id
+       WHERE t.originType = 'visit' AND ti.itemType = 'service'
+       GROUP BY t.id
+       ORDER BY t.createdAt DESC
+       LIMIT ?`
     )
     .all(limit) as VisitRecord[];
 }
@@ -1679,6 +2288,18 @@ export function deleteProductPermanently(payload: { productId: string }) {
     name: product.name,
     removed: true,
   };
+}
+
+export function restoreProduct(payload: { productId: string }) {
+  const db = getDatabase();
+  const product = db
+    .prepare('SELECT id, name, isActive FROM products WHERE id = ?')
+    .get(payload.productId) as { id: string; name: string; isActive: number } | undefined;
+  if (!product) throw new Error('Product not found');
+  if (product.isActive === 1) throw new Error('Product is already active');
+
+  db.prepare('UPDATE products SET isActive = 1 WHERE id = ?').run(payload.productId);
+  return { productId: payload.productId, name: product.name, isActive: 1 };
 }
 
 export function getPendingSyncEntries(limit = 25): SyncQueueRow[] {

@@ -1,7 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import type { Product, ServicePackage } from '../electron/schema';
 
-type CartLine = Product & { quantity: number };
+type CartLine = {
+  id: string;
+  type: 'product' | 'service';
+  itemId: string | null;
+  name: string;
+  price: number;
+  qty: number;
+  taxRate: number;
+};
 type InventoryRow = Product;
 type ServiceRow = ServicePackage;
 type CustomerRow = {
@@ -36,40 +44,57 @@ type CustomerServiceSummary = {
   visitCount: number;
   totalAmount: number;
 };
+type LedgerItem = {
+  itemType: 'product' | 'service';
+  name: string;
+  qty: number;
+  price: number;
+  lineTotal: number;
+};
+type LedgerEntry = {
+  id: string;
+  receiptNo: string;
+  createdAt: string;
+  paymentMethod: string;
+  grandTotal: number;
+  itemCount: number;
+  pointsEarned: number;
+  items: LedgerItem[];
+};
 type CustomerProfile = {
   customer: CustomerRow;
-  recentVisits: VisitRow[];
-  favoriteServices: CustomerServiceSummary[];
+  lastVisitServices: LedgerItem[];
   pointsEarnedTotal: number;
   pointsRedeemedTotal: number;
-  loyaltyTransactions: Array<{
-    id: string;
-    customerId: string;
-    customerName: string;
-    transactionType: 'earn' | 'redeem';
-    points: number;
-    notes: string | null;
-    createdAt: string;
-  }>;
+  ledger: LedgerEntry[];
 };
-type ViewMode = 'dashboard' | 'customers' | 'billing' | 'pos' | 'inventory' | 'services' | 'reports' | 'settings';
+type ViewMode = 'dashboard' | 'customers' | 'checkout' | 'inventory' | 'services' | 'reports' | 'settings';
 type SaleResult = {
   id: string;
   receiptNo: string;
+  customerId: string | null;
+  customerName: string;
+  cashierName: string;
   subtotal: number;
   taxTotal: number;
   discountTotal: number;
   grandTotal: number;
+  paymentMethod: string;
+  loyaltyPointsEarned: number;
   createdAt: string;
   itemCount: number;
+  originType: string | null;
+  originId: string | null;
   detailedItems: Array<{
-    productName: string;
-    quantity: number;
-    unitPrice: number;
+    id: string;
+    itemType: 'product' | 'service';
+    itemId: string | null;
+    name: string;
+    qty: number;
+    price: number;
+    taxRate: number;
     lineTotal: number;
   }>;
-  cashierName: string;
-  paymentMethod: string;
 };
 type DashboardSummary = {
   salesToday: number;
@@ -95,6 +120,11 @@ type ReportSnapshot = {
     totalDiscount: number;
     averageSaleValue: number;
     topPaymentMethod: string;
+    topProducts: Array<{
+      productName: string;
+      quantitySold: number;
+      totalAmount: number;
+    }>;
     monthlyTrend: Array<{
       month: string;
       revenue: number;
@@ -103,14 +133,19 @@ type ReportSnapshot = {
     recentSales: Array<{
       id: string;
       receiptNo: string;
+      customerId: string | null;
+      customerName: string;
       cashierName: string;
       subtotal: number;
       taxTotal: number;
       discountTotal: number;
       grandTotal: number;
       paymentMethod: string;
+      loyaltyPointsEarned: number;
       itemCount: number;
       createdAt: string;
+      originType: string | null;
+      originId: string | null;
     }>;
   };
   customers: {
@@ -166,8 +201,7 @@ type SettingsSnapshot = {
     tagline: string;
   };
   loyaltyRules: {
-    pointsPer100Currency: number;
-    redemptionValuePerPoint: number;
+    currencyPerPoint: number;
     minimumRedeemPoints: number;
   };
 };
@@ -235,9 +269,86 @@ const money = new Intl.NumberFormat('en-PK', {
 
 const CASHIER_NAME = 'Amina Khan';
 
+// Loyalty conversion (mirrors backend): 15 PKR of service = 1 point,
+// and 1 point is worth 15 PKR of service value when redeeming.
+const PKR_PER_POINT = 15;
+
+type PickerOption = { id: string; name: string; price: number; meta?: string };
+
+// Searchable dropdown: type to filter or scroll the list, click to pick.
+function SearchSelect({
+  label,
+  placeholder,
+  options,
+  emptyText,
+  onPick,
+}: {
+  label: string;
+  placeholder: string;
+  options: PickerOption[];
+  emptyText: string;
+  onPick: (id: string) => void;
+}) {
+  const [queryText, setQueryText] = useState('');
+  const [open, setOpen] = useState(false);
+
+  const filtered = useMemo(() => {
+    const q = queryText.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter((option) => `${option.name} ${option.meta ?? ''}`.toLowerCase().includes(q));
+  }, [options, queryText]);
+
+  return (
+    <div className="search-select">
+      <label>
+        <span>{label}</span>
+        <input
+          className="field"
+          placeholder={placeholder}
+          value={queryText}
+          onFocus={() => setOpen(true)}
+          onChange={(event) => {
+            setQueryText(event.target.value);
+            setOpen(true);
+          }}
+          onBlur={() => window.setTimeout(() => setOpen(false), 150)}
+        />
+      </label>
+      {open ? (
+        <div className="search-select-list">
+          {filtered.length > 0 ? (
+            filtered.map((option) => (
+              <button
+                type="button"
+                className="search-select-item"
+                key={option.id}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  onPick(option.id);
+                  setQueryText('');
+                  setOpen(false);
+                }}
+              >
+                <span>
+                  {option.name}
+                  {option.meta ? <span className="muted"> · {option.meta}</span> : null}
+                </span>
+                <strong>{money.format(option.price)}</strong>
+              </button>
+            ))
+          ) : (
+            <span className="muted search-select-empty">{emptyText}</span>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function App() {
   const [products, setProducts] = useState<Product[]>([]);
   const [services, setServices] = useState<ServiceRow[]>([]);
+  const [serviceInventory, setServiceInventory] = useState<ServiceRow[]>([]);
   const [inventory, setInventory] = useState<InventoryRow[]>([]);
   const [recentSales, setRecentSales] = useState<Array<any>>([]);
   const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
@@ -259,6 +370,16 @@ function App() {
   const [billCart, setBillCart] = useState<Array<ServiceRow & { quantity: number }>>([]);
   const [status, setStatus] = useState<'ready' | 'saved'>('ready');
   const [view, setView] = useState<ViewMode>('dashboard');
+  const [checkoutCustomerQuery, setCheckoutCustomerQuery] = useState('');
+  const [checkoutCustomerMatches, setCheckoutCustomerMatches] = useState<CustomerRow[]>([]);
+  const [checkoutCustomerSearchStatus, setCheckoutCustomerSearchStatus] = useState<'idle' | 'loading'>('idle');
+  const [selectedCheckoutCustomer, setSelectedCheckoutCustomer] = useState<CustomerRow | null>(null);
+  const [checkoutPaymentMethod, setCheckoutPaymentMethod] = useState('Cash');
+  const [checkoutDiscount, setCheckoutDiscount] = useState('0.00');
+  const [checkoutDiscountType, setCheckoutDiscountType] = useState<'pkr' | 'percent'>('pkr');
+  const [checkoutStatus, setCheckoutStatus] = useState<'ready' | 'saved'>('ready');
+  const [checkoutCustomerOpen, setCheckoutCustomerOpen] = useState(false);
+  const [receiptPreview, setReceiptPreview] = useState<SaleResult | null>(null);
   const [newItem, setNewItem] = useState({
     sku: '',
     barcode: '',
@@ -267,6 +388,7 @@ function App() {
     price: '0.00',
     stock: '0',
     taxRate: '0.08',
+    redeemPoints: '0',
   });
   const [newItemStatus, setNewItemStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [newItemError, setNewItemError] = useState('');
@@ -275,10 +397,12 @@ function App() {
     name: '',
     description: '',
     price: '0.00',
+    redeemPoints: '0',
   });
   const [newServiceStatus, setNewServiceStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [newServiceError, setNewServiceError] = useState('');
   const [showDeletedItems, setShowDeletedItems] = useState(false);
+  const [showDeletedServices, setShowDeletedServices] = useState(false);
   const [newCustomer, setNewCustomer] = useState({
     name: '',
     phone: '',
@@ -330,8 +454,7 @@ function App() {
     tagline: '',
   });
   const [loyaltyForm, setLoyaltyForm] = useState({
-    pointsPer100Currency: '1',
-    redemptionValuePerPoint: '1',
+    currencyPerPoint: '15',
     minimumRedeemPoints: '50',
   });
   const [settingsStatus, setSettingsStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
@@ -346,13 +469,13 @@ function App() {
   const [customerFormMode, setCustomerFormMode] = useState<'create' | 'edit'>('create');
   const [customerFormStatus, setCustomerFormStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [customerFormError, setCustomerFormError] = useState('');
-  const [customerModal, setCustomerModal] = useState<'customer' | 'visit' | 'edit' | 'redeem' | 'bill' | null>(null);
+  const [customerModal, setCustomerModal] = useState<'customer' | 'visit' | 'edit' | 'redeem' | 'bill' | 'ledger' | null>(null);
   const scanBuffer = useRef('');
   const scanTimer = useRef<number | null>(null);
   const navItems = [
     { key: 'dashboard', label: 'Dashboard', icon: <DashboardIcon /> },
     { key: 'customers', label: 'Customers', icon: <CustomersIcon /> },
-    { key: 'billing', label: 'Billing', icon: <BillingIcon /> },
+    { key: 'checkout', label: 'Checkout', icon: <BillingIcon /> },
     { key: 'services', label: 'Services', icon: <ServicesIcon /> },
     { key: 'reports', label: 'Reports', icon: <ReportsIcon /> },
     { key: 'inventory', label: 'Inventory', icon: <InventoryIcon /> },
@@ -376,36 +499,37 @@ function App() {
     setSettings(next);
     setSalonForm(next.salonInfo);
     setLoyaltyForm({
-      pointsPer100Currency: String(next.loyaltyRules.pointsPer100Currency),
-      redemptionValuePerPoint: String(next.loyaltyRules.redemptionValuePerPoint),
+      currencyPerPoint: String(next.loyaltyRules.currencyPerPoint),
       minimumRedeemPoints: String(next.loyaltyRules.minimumRedeemPoints),
     });
   };
 
   useEffect(() => {
     const load = async () => {
-      const [dash, reportData, settingsData, list, serviceList, sales, bills, sync, stock] = await Promise.all([
-        window.pos.getDashboard(),
-        window.pos.getReports(),
-        window.pos.getSettings(),
-        window.pos.listProducts(),
-        window.pos.listServices(),
-        window.pos.getRecentSales(),
-        window.pos.getRecentBills(),
-        window.pos.getSyncStatus(),
-        window.pos.listInventory(),
-      ]);
+      const [dash, reportData, settingsData, list, serviceList, allServiceList, sales, bills, sync, stock] =
+        await Promise.all([
+          window.pos.getDashboard(),
+          window.pos.getReports(),
+          window.pos.getSettings(),
+          window.pos.listProducts(),
+          window.pos.listServices(),
+          window.pos.listAllServices(),
+          window.pos.getRecentSales(),
+          window.pos.getRecentBills(),
+          window.pos.getSyncStatus(),
+          window.pos.listInventory(),
+        ]);
       setDashboard(dash);
       setReports(reportData);
       setSettings(settingsData);
       setSalonForm(settingsData.salonInfo);
       setLoyaltyForm({
-        pointsPer100Currency: String(settingsData.loyaltyRules.pointsPer100Currency),
-        redemptionValuePerPoint: String(settingsData.loyaltyRules.redemptionValuePerPoint),
+        currencyPerPoint: String(settingsData.loyaltyRules.currencyPerPoint),
         minimumRedeemPoints: String(settingsData.loyaltyRules.minimumRedeemPoints),
       });
       setProducts(list);
       setServices(serviceList);
+      setServiceInventory(allServiceList);
       setRecentSales(sales);
       setRecentBills(bills);
       setSyncStatus(sync);
@@ -422,7 +546,7 @@ function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (view !== 'pos' && view !== 'billing') return;
+      if (view !== 'checkout') return;
       if (event.key === 'Enter') {
         const code = scanBuffer.current.trim();
         scanBuffer.current = '';
@@ -447,6 +571,15 @@ function App() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [products, view]);
+
+  useEffect(() => {
+    if (view === 'checkout') return;
+    scanBuffer.current = '';
+    if (scanTimer.current) {
+      window.clearTimeout(scanTimer.current);
+      scanTimer.current = null;
+    }
+  }, [view]);
 
   useEffect(() => {
     let active = true;
@@ -475,7 +608,35 @@ function App() {
   }, [customerSearch]);
 
   useEffect(() => {
-    if (view !== 'billing' && customerModal !== 'bill') return;
+    if (view !== 'checkout') return;
+
+    let active = true;
+    setCheckoutCustomerSearchStatus('loading');
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const matches = await window.pos.findCustomers({
+          query: checkoutCustomerQuery,
+          limit: 8,
+        });
+        if (!active) return;
+        setCheckoutCustomerMatches(matches);
+      } catch {
+        if (!active) return;
+        setCheckoutCustomerMatches([]);
+      } finally {
+        if (active) setCheckoutCustomerSearchStatus('idle');
+      }
+    }, 200);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [checkoutCustomerQuery, view]);
+
+  useEffect(() => {
+    if (customerModal !== 'bill') return;
 
     let active = true;
     setBillCustomerSearchStatus('loading');
@@ -586,95 +747,188 @@ function App() {
     () => inventory.filter((item) => item.isActive === 0),
     [inventory]
   );
+  const activeServices = useMemo(
+    () => serviceInventory.filter((item) => item.isActive === 1),
+    [serviceInventory]
+  );
+  const deletedServices = useMemo(
+    () => serviceInventory.filter((item) => item.isActive === 0),
+    [serviceInventory]
+  );
 
-  const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
-  const tax = cart.reduce((sum, item) => sum + item.price * item.quantity * item.taxRate, 0);
-  const total = subtotal + tax;
+  const subtotal = cart.reduce((sum, item) => sum + item.price * item.qty, 0);
+  const tax = cart.reduce((sum, item) => sum + item.price * item.qty * item.taxRate, 0);
+  const discountInput = Number(checkoutDiscount) || 0;
+  const discount =
+    checkoutDiscountType === 'percent'
+      ? Math.min(subtotal, (subtotal * Math.max(0, Math.min(100, discountInput))) / 100)
+      : Math.min(subtotal + tax, Math.max(0, discountInput));
+  const total = Math.max(0, subtotal + tax - discount);
+  // Points preview: services only, using the configurable earning rate.
+  const currencyPerPoint = settings?.loyaltyRules.currencyPerPoint || PKR_PER_POINT;
+  const serviceSubtotal = cart
+    .filter((item) => item.type === 'service')
+    .reduce((sum, item) => sum + item.price * item.qty, 0);
+  const pointsToEarn = Math.floor(serviceSubtotal / currencyPerPoint);
 
   const addToCart = (product: Product) => {
     setCart((current) => {
       const found = current.find((item) => item.id === product.id);
       if (found) {
         return current.map((item) =>
-          item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item
+          item.id === product.id ? { ...item, qty: item.qty + 1 } : item
         );
       }
-      return [...current, { ...product, quantity: 1 }];
+      return [
+        ...current,
+        {
+          id: product.id,
+          type: 'product',
+          itemId: product.id,
+          name: product.name,
+          price: product.price,
+          qty: 1,
+          taxRate: product.taxRate,
+        },
+      ];
     });
-    setStatus('ready');
+    setCheckoutStatus('ready');
   };
 
   const increaseCartItem = (productId: string) => {
     setCart((current) =>
       current.map((item) =>
-        item.id === productId ? { ...item, quantity: item.quantity + 1 } : item
+        item.id === productId ? { ...item, qty: item.qty + 1 } : item
       )
     );
-    setStatus('ready');
+    setCheckoutStatus('ready');
   };
 
   const decreaseCartItem = (productId: string) => {
     setCart((current) =>
       current
         .map((item) =>
-          item.id === productId ? { ...item, quantity: item.quantity - 1 } : item
+          item.id === productId ? { ...item, qty: item.qty - 1 } : item
         )
-        .filter((item) => item.quantity > 0)
+        .filter((item) => item.qty > 0)
     );
-    setStatus('ready');
+    setCheckoutStatus('ready');
   };
 
   const removeCartItem = (productId: string) => {
     setCart((current) => current.filter((item) => item.id !== productId));
-    setStatus('ready');
+    setCheckoutStatus('ready');
   };
 
   const clearCart = () => {
     setCart([]);
-    setStatus('ready');
+    setCheckoutStatus('ready');
+  };
+
+  const addServiceToCart = (service: ServiceRow) => {
+    setCart((current) => {
+      const found = current.find((item) => item.type === 'service' && item.itemId === service.id);
+      if (found) {
+        return current.map((item) =>
+          item.type === 'service' && item.itemId === service.id ? { ...item, qty: item.qty + 1 } : item
+        );
+      }
+      return [
+        ...current,
+        {
+          id: `service-${service.id}`,
+          type: 'service',
+          itemId: service.id,
+          name: service.name,
+          price: service.price,
+          qty: 1,
+          taxRate: 0,
+        },
+      ];
+    });
+    setCheckoutStatus('ready');
+  };
+
+  const updateCheckoutCustomer = (customer: CustomerRow | null) => {
+    setSelectedCheckoutCustomer(customer);
+    setCheckoutCustomerQuery(customer?.name ?? '');
+  };
+
+  const clearCheckout = () => {
+    clearCart();
+    updateCheckoutCustomer(null);
+    setCheckoutDiscount('0.00');
+    setCheckoutPaymentMethod('Cash');
   };
 
   const refreshData = async () => {
-    const [dash, reportData, settingsData, list, serviceList, sales, bills, sync, stock] = await Promise.all([
-      window.pos.getDashboard(),
-      window.pos.getReports(),
-      window.pos.getSettings(),
-      window.pos.listProducts(),
-      window.pos.listServices(),
-      window.pos.getRecentSales(),
-      window.pos.getRecentBills(),
-      window.pos.getSyncStatus(),
-      window.pos.listInventory(),
-    ]);
+    const [dash, reportData, settingsData, list, serviceList, allServiceList, transactions, bills, sync, stock] =
+      await Promise.all([
+        window.pos.getDashboard(),
+        window.pos.getReports(),
+        window.pos.getSettings(),
+        window.pos.listProducts(),
+        window.pos.listServices(),
+        window.pos.listAllServices(),
+        window.pos.getRecentTransactions({ limit: 12 }),
+        window.pos.getRecentBills(),
+        window.pos.getSyncStatus(),
+        window.pos.listInventory(),
+      ]);
     setDashboard(dash);
     setReports(reportData);
     setSettings(settingsData);
     setSalonForm(settingsData.salonInfo);
     setLoyaltyForm({
-      pointsPer100Currency: String(settingsData.loyaltyRules.pointsPer100Currency),
-      redemptionValuePerPoint: String(settingsData.loyaltyRules.redemptionValuePerPoint),
+      currencyPerPoint: String(settingsData.loyaltyRules.currencyPerPoint),
       minimumRedeemPoints: String(settingsData.loyaltyRules.minimumRedeemPoints),
     });
     setProducts(list);
     setServices(serviceList);
-    setRecentSales(sales);
+    setServiceInventory(allServiceList);
+    setRecentSales(transactions);
     setRecentBills(bills);
     setSyncStatus(sync);
     setInventory(stock);
   };
 
-  const submitSale = async () => {
+  const submitCheckout = async () => {
     if (cart.length === 0) return;
-    const result = (await window.pos.createSale({
+    const result = (await window.pos.createTransaction({
       cashierName: CASHIER_NAME,
-      paymentMethod: 'Cash',
-      items: cart.map((item) => ({ productId: item.id, quantity: item.quantity })),
+      paymentMethod: checkoutPaymentMethod,
+      discountTotal: discount,
+      customerId: selectedCheckoutCustomer?.id ?? null,
+      customerName: selectedCheckoutCustomer?.name ?? 'Walk-in',
+      items: cart.map((item) => ({
+        type: item.type,
+        itemId: item.itemId,
+        name: item.name,
+        price: item.price,
+        qty: item.qty,
+        taxRate: item.taxRate,
+      })),
     })) as SaleResult;
-    setCart([]);
-    setStatus('saved');
-    await window.pos.printReceipt(result);
+    clearCheckout();
+    setCheckoutStatus('saved');
+    // Show an on-screen receipt preview; the user prints from there.
+    setReceiptPreview(result);
     await refreshData();
-    alert(`Invoice saved locally as ${result.receiptNo}`);
+  };
+
+  const printCurrentReceipt = async () => {
+    if (!receiptPreview) return;
+    await window.pos.printReceipt({
+      ...receiptPreview,
+      pointsEarned: receiptPreview.loyaltyPointsEarned,
+      detailedItems: receiptPreview.detailedItems.map((item) => ({
+        itemType: item.itemType,
+        name: item.name,
+        quantity: item.qty,
+        unitPrice: item.price,
+        lineTotal: item.lineTotal,
+      })),
+    });
   };
 
   const adjustStock = async (productId: string, delta: number) => {
@@ -704,6 +958,32 @@ function App() {
     await refreshData();
   };
 
+  const restoreItem = async (productId: string) => {
+    await window.pos.restoreProduct({ productId });
+    await refreshData();
+  };
+
+  const softDeleteService = async (serviceId: string, serviceName: string) => {
+    const confirmed = window.confirm(
+      `Delete ${serviceName}? It will be marked as deleted and hidden from the POS.`
+    );
+    if (!confirmed) return;
+    await window.pos.deleteService({ serviceId });
+    await refreshData();
+  };
+
+  const restoreServiceItem = async (serviceId: string) => {
+    await window.pos.restoreService({ serviceId });
+    await refreshData();
+  };
+
+  const hardDeleteService = async (serviceId: string, serviceName: string) => {
+    const confirmed = window.confirm(`Permanently delete ${serviceName}? This cannot be undone.`);
+    if (!confirmed) return;
+    await window.pos.deleteServicePermanently({ serviceId });
+    await refreshData();
+  };
+
   const createNewItem = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setNewItemStatus('saving');
@@ -718,6 +998,7 @@ function App() {
         price: Number(newItem.price),
         stock: Number(newItem.stock),
         taxRate: Number(newItem.taxRate),
+        redeemPoints: Number(newItem.redeemPoints) || 0,
       });
       setNewItem({
         sku: '',
@@ -727,6 +1008,7 @@ function App() {
         price: '0.00',
         stock: '0',
         taxRate: '0.08',
+        redeemPoints: '0',
       });
       setNewItemStatus('saved');
       await refreshData();
@@ -747,12 +1029,14 @@ function App() {
         name: newService.name,
         description: newService.description,
         price: Number(newService.price),
+        redeemPoints: Number(newService.redeemPoints) || 0,
       });
       setNewService({
         code: '',
         name: '',
         description: '',
         price: '0.00',
+        redeemPoints: '0',
       });
       setNewServiceStatus('saved');
       await refreshData();
@@ -792,13 +1076,11 @@ function App() {
 
     try {
       const next = await window.pos.updateLoyaltyRules({
-        pointsPer100Currency: Number(loyaltyForm.pointsPer100Currency),
-        redemptionValuePerPoint: Number(loyaltyForm.redemptionValuePerPoint),
+        currencyPerPoint: Number(loyaltyForm.currencyPerPoint),
         minimumRedeemPoints: Number(loyaltyForm.minimumRedeemPoints),
       });
       setLoyaltyForm({
-        pointsPer100Currency: String(next.pointsPer100Currency),
-        redemptionValuePerPoint: String(next.redemptionValuePerPoint),
+        currencyPerPoint: String(next.currencyPerPoint),
         minimumRedeemPoints: String(next.minimumRedeemPoints),
       });
       setSettings((current) =>
@@ -848,7 +1130,9 @@ function App() {
       }
 
       setRestoreStatus('saved');
-      setRestoreMessage(`Restored from ${result.restoredFrom ?? 'backup file'}`);
+      setRestoreMessage(
+        `Restored ${result.rowsRestored ?? 0} rows across ${result.tablesRestored ?? 0} tables from the backup.`
+      );
       setSelectedCustomerId('');
       setCustomerProfile(null);
       setCustomerFormStatus('idle');
@@ -1014,6 +1298,11 @@ function App() {
     setCustomerModal('redeem');
   };
 
+  const openLedgerModal = () => {
+    if (!customerProfile || !selectedCustomerId) return;
+    setCustomerModal('ledger');
+  };
+
   const createNewBill = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setBillStatus('saving');
@@ -1117,8 +1406,13 @@ function App() {
     }
   };
 
-  const redeemCustomerPoints = async () => {
+  const redeemService = async (service: ServiceRow) => {
     if (!selectedCustomerId || !customerProfile) return;
+
+    const confirmed = window.confirm(
+      `Redeem "${service.name}" for ${service.redeemPoints} points from ${customerProfile.customer.name}?`
+    );
+    if (!confirmed) return;
 
     setRedeemStatus('saving');
     setRedeemError('');
@@ -1126,10 +1420,9 @@ function App() {
     try {
       const result = await window.pos.redeemCustomerPoints({
         customerId: selectedCustomerId,
-        points: Number(redeemPoints),
-        notes: `Redeemed from ${customerProfile.customer.name}`,
+        points: service.redeemPoints,
+        notes: `Redeemed "${service.name}"`,
       });
-      setRedeemPoints('0');
       setRedeemStatus('saved');
       setCustomerModal(null);
       setCustomerProfile((current) =>
@@ -1141,25 +1434,13 @@ function App() {
                 loyaltyPoints: result.loyaltyPoints,
               },
               pointsRedeemedTotal: current.pointsRedeemedTotal + result.pointsRedeemed,
-              loyaltyTransactions: [
-                {
-                  id: `redeem-${Date.now()}`,
-                  customerId: selectedCustomerId,
-                  customerName: customerProfile.customer.name,
-                  transactionType: 'redeem',
-                  points: result.pointsRedeemed,
-                  notes: `Redeemed from ${customerProfile.customer.name}`,
-                  createdAt: result.createdAt,
-                },
-                ...current.loyaltyTransactions,
-              ],
             }
           : current
       );
       await refreshData();
     } catch (error) {
       setRedeemStatus('error');
-      setRedeemError(error instanceof Error ? error.message : 'Could not redeem points');
+      alert(error instanceof Error ? error.message : 'Could not redeem points');
     }
   };
 
@@ -1221,8 +1502,8 @@ function App() {
                   ? 'Reception'
                   : view === 'reports'
                     ? 'Reporting'
-                    : view === 'billing' || view === 'pos'
-                      ? 'Billing desk'
+                    : view === 'checkout'
+                      ? 'Checkout desk'
                   : view === 'services'
                     ? 'Treatment catalog'
                   : view === 'settings'
@@ -1234,9 +1515,9 @@ function App() {
                 ? 'Parlor dashboard for customers, visits, and loyalty.'
                 : view === 'customers'
                   ? 'Manage customer profiles, history, and favorite services.'
-                  : view === 'reports'
+                : view === 'reports'
                     ? 'Review revenue, visit, customer, and loyalty performance.'
-                  : view === 'billing' || view === 'pos'
+                  : view === 'checkout'
                     ? 'Generate invoices, save transactions, and print receipts.'
                   : view === 'services'
                     ? 'Create treatment packages with codes, descriptions, and pricing.'
@@ -1257,9 +1538,9 @@ function App() {
                   Track customers, today's visits, revenue, and loyalty points while keeping quick actions close by.
                 </p>
               </div>
-              <div className="dashboard-hero-actions">
-                <button className="ghost-button" onClick={() => setView('billing')}>
-                  New Bill
+                <div className="dashboard-hero-actions">
+                <button className="ghost-button" onClick={() => setView('checkout')}>
+                  New Transaction
                 </button>
                 <button className="ghost-button" onClick={() => setView('services')}>
                   Services
@@ -1279,7 +1560,7 @@ function App() {
               <div className="metric-card">
                 <span>Today's visits</span>
                 <strong>{dashboard?.visitsToday ?? '...'}</strong>
-                <small>Walk-ins and booked sessions</small>
+                <small>Customer visits logged today</small>
               </div>
               <div className="metric-card">
                 <span>Revenue summary</span>
@@ -1318,13 +1599,10 @@ function App() {
                   <button
                     className="mini-form mini-action-button"
                     type="button"
-                    onClick={() => {
-                      setView('customers');
-                      openVisitModal();
-                    }}
+                    onClick={() => setView('checkout')}
                   >
-                    <h3>New Visit</h3>
-                    <span>Select a customer and service in a popup.</span>
+                    <h3>New Transaction</h3>
+                    <span>Open the unified checkout screen.</span>
                   </button>
                 </div>
               </section>
@@ -1419,7 +1697,7 @@ function App() {
                     <div className="metric-card">
                       <span>Points earned</span>
                       <strong>{customerProfile.pointsEarnedTotal}</strong>
-                      <small>From completed visits</small>
+                      <small>From services ({currencyPerPoint} PKR = 1 pt)</small>
                     </div>
                     <div className="metric-card">
                       <span>Points redeemed</span>
@@ -1442,90 +1720,37 @@ function App() {
                     </div>
                   </div>
 
-                  <div className="customer-profile-grid">
+                  <div className="customer-profile-grid customer-profile-grid-single">
                     <section className="customer-profile-card">
                       <div className="inventory-section-head">
                         <div>
-                          <h3>Services taken</h3>
-                          <span className="muted">Most requested treatments</span>
+                          <h3>Service taken</h3>
+                          <span className="muted">Services from the last visit</span>
                         </div>
+                        {customerProfile.customer.lastVisitAt ? (
+                          <span className="pill pill-online">
+                            {new Date(customerProfile.customer.lastVisitAt).toLocaleDateString()}
+                          </span>
+                        ) : null}
                       </div>
                       <div className="customer-summary-list">
-                        {customerProfile.favoriteServices.length > 0 ? (
-                          customerProfile.favoriteServices.map((service) => (
-                            <div className="customer-summary-item" key={service.serviceName}>
+                        {customerProfile.lastVisitServices.length > 0 ? (
+                          customerProfile.lastVisitServices.map((service, index) => (
+                            <div className="customer-summary-item" key={`${service.name}-${index}`}>
                               <div>
-                                <strong>{service.serviceName}</strong>
-                                <span>{service.visitCount} visits</span>
-                              </div>
-                              <div className="right">
-                                <strong>{money.format(service.totalAmount)}</strong>
-                                <span>spent</span>
-                              </div>
-                            </div>
-                          ))
-                        ) : (
-                          <span className="muted">No visit history yet.</span>
-                        )}
-                      </div>
-                    </section>
-
-                    <section className="customer-profile-card">
-                      <div className="inventory-section-head">
-                        <div>
-                          <h3>Transaction history</h3>
-                          <span className="muted">Latest salon visits</span>
-                        </div>
-                      </div>
-                      <div className="customer-history-list">
-                        {customerProfile.recentVisits.length > 0 ? (
-                          customerProfile.recentVisits.map((visit) => (
-                            <div className="customer-history-item" key={visit.id}>
-                              <div>
-                                <strong>{visit.serviceName}</strong>
+                                <strong>{service.name}</strong>
                                 <span>
-                                  {visit.serviceCode ? `${visit.serviceCode} · ` : ''}
-                                  {visit.priceOverride ? 'manual price · ' : ''}
-                                  {visit.notes || 'No notes'}
+                                  {service.qty} x {money.format(service.price)}
                                 </span>
                               </div>
                               <div className="right">
-                                <strong>{money.format(visit.amount)}</strong>
-                                <span>
-                                  {new Date(visit.createdAt).toLocaleDateString()} · {visit.pointsEarned} points
-                                </span>
+                                <strong>{money.format(service.lineTotal)}</strong>
+                                <span>total</span>
                               </div>
                             </div>
                           ))
                         ) : (
-                          <span className="muted">No visits recorded for this customer.</span>
-                        )}
-                      </div>
-                    </section>
-
-                    <section className="customer-profile-card">
-                      <div className="inventory-section-head">
-                        <div>
-                          <h3>Loyalty activity</h3>
-                          <span className="muted">Points earned and redeemed</span>
-                        </div>
-                      </div>
-                      <div className="customer-history-list">
-                        {customerProfile.loyaltyTransactions.length > 0 ? (
-                          customerProfile.loyaltyTransactions.map((entry) => (
-                            <div className="customer-history-item" key={entry.id}>
-                              <div>
-                                <strong>{entry.transactionType === 'earn' ? 'Points earned' : 'Points redeemed'}</strong>
-                                <span>{entry.notes || 'No notes'}</span>
-                              </div>
-                              <div className="right">
-                                <strong>{entry.transactionType === 'earn' ? '+' : '-'}{entry.points}</strong>
-                                <span>{new Date(entry.createdAt).toLocaleDateString()}</span>
-                              </div>
-                            </div>
-                          ))
-                        ) : (
-                          <span className="muted">No loyalty transactions yet.</span>
+                          <span className="muted">No service taken on the last visit.</span>
                         )}
                       </div>
                     </section>
@@ -1538,6 +1763,9 @@ function App() {
                     <button className="ghost-button" onClick={openRedeemModal}>
                       Redeem loyalty
                     </button>
+                    <button className="ghost-button" onClick={openLedgerModal}>
+                      Transaction history
+                    </button>
                     <button className="danger-button" onClick={removeCustomer} disabled={customerProfile.customer.isActive === 0}>
                       Delete customer
                     </button>
@@ -1549,268 +1777,307 @@ function App() {
               ) : null}
             </div>
           </section>
-        ) : view === 'billing' ? (
-          <section className="workspace workspace-billing">
-            <div className="catalog billing-catalog">
-              <div className="billing-head">
+        ) : view === 'checkout' ? (
+          <section className="workspace checkout-workspace checkout-form-workspace">
+            <div className="panel checkout-form-panel">
+              <div className="dashboard-panel-head">
                 <div>
-                  <p className="eyebrow">Billing desk</p>
-                  <h2>Select a service card to build a bill.</h2>
+                  <p className="eyebrow">New sale</p>
+                  <h2>Build the bill</h2>
                 </div>
-                <button type="button" className="ghost-button ghost-button-small" onClick={openBillModal}>
-                  New bill
-                </button>
-              </div>
-
-                <div className="service-card-grid">
-                  {services.map((service) => (
-                    <button
-                      type="button"
-                      className={`service-card ${selectedBillServiceIds.has(service.id) ? 'service-card-active' : ''}`}
-                      key={service.id}
-                      onClick={() => chooseBillService(service)}
-                    >
-                    <div className="product-top">
-                      <span className="category">{service.code}</span>
-                      <span className="stock">{money.format(service.price)}</span>
-                    </div>
-                    <h3>{service.name}</h3>
-                    <p className="muted service-card-description">{service.description}</p>
-                    <div className="product-bottom">
-                      <strong>{selectedBillServiceIds.has(service.id) ? 'Selected' : 'Tap to add'}</strong>
-                      <span>{selectedBillServiceIds.has(service.id) ? 'Remove to undo' : 'Bill item'}</span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-
-              <div className="inventory-section inventory-section-muted billing-draft">
-                <div className="inventory-section-head">
-                  <div>
-                    <h3>Selected services</h3>
-                    <span className="muted">Tap a service card again to remove it</span>
-                  </div>
-                  <span className="muted">
-                    {selectedBillServices.length} selected
-                  </span>
-                </div>
-                <div className="billing-draft-body">
-                  {selectedBillServices.length > 0 ? (
-                    selectedBillServices.map((service) => (
-                      <div className="customer-history-item" key={service.id}>
-                        <div>
-                          <strong>{service.name}</strong>
-                          <span>
-                            {service.code} · {service.description}
-                          </span>
-                        </div>
-                        <div className="right">
-                          <strong>{money.format(service.price)}</strong>
-                          <button type="button" className="ghost-button ghost-button-small" onClick={() => chooseBillService(service)}>
-                            Remove
-                          </button>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <span className="muted">Select one or more services to build the bill.</span>
-                  )}
-                </div>
-                <div className="totals">
-                  <div className="grand">
-                    <span>Total</span>
-                    <strong>{money.format(selectedBillTotal)}</strong>
-                  </div>
-                </div>
-              </div>
-
-              <div className="inventory-section inventory-section-muted">
-                <div className="inventory-section-head">
-                  <div>
-                    <h3>Saved bills</h3>
-                    <span className="muted">Latest service bills</span>
-                  </div>
-                  <span className="muted">{recentBills.length} stored</span>
-                </div>
-                <div className="customer-history-list">
-                  {recentBills.length > 0 ? (
-                    recentBills.slice(0, 6).map((bill) => (
-                      <div className="customer-history-item" key={bill.id}>
-                        <div>
-                          <strong>{bill.customerName}</strong>
-                          <span>
-                            {bill.serviceCode ? `${bill.serviceCode} · ` : ''}
-                            {bill.serviceName}
-                            {bill.notes ? ` · ${bill.notes}` : ''}
-                          </span>
-                        </div>
-                        <div className="right">
-                          <strong>{money.format(bill.amount)}</strong>
-                          <span>{new Date(bill.createdAt).toLocaleDateString()}</span>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <span className="muted">No bills created yet.</span>
-                  )}
-                </div>
-              </div>
-            </div>
-          </section>
-        ) : view === 'pos' ? (
-          <section className="workspace">
-          <div className="catalog">
-            <div className="search-wrap">
-                <input
-                  autoFocus
-                  className="search"
-                  placeholder="Search item, code, or category"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                />
-            </div>
-
-            <div className="product-grid">
-              {filteredProducts.map((product) => (
-                <button className="product-card" key={product.id} onClick={() => addToCart(product)}>
-                  <div className="product-top">
-                    <span className="category">{product.category}</span>
-                    <span className="stock">{product.stock} left</span>
-                  </div>
-                  <h3>{product.name}</h3>
-                  <div className="product-bottom">
-                    <strong>{money.format(product.price)}</strong>
-                    <span>{product.sku}</span>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <aside className="cart">
-            <div className="cart-header">
-              <div>
-                <p className="eyebrow">Current basket</p>
-                <h3>{cart.length} items</h3>
-              </div>
-              <div className="cart-header-actions">
-                <button type="button" className="ghost-button ghost-button-small" onClick={openBillModal}>
-                  New bill
-                </button>
-                <span className={status === 'saved' ? 'pill pill-online' : 'pill'}>{status}</span>
                 {cart.length > 0 ? (
-                  <button className="ghost-button ghost-button-small" onClick={clearCart}>
+                  <button className="ghost-button ghost-button-small" onClick={clearCheckout}>
                     Clear
                   </button>
                 ) : null}
               </div>
-            </div>
 
-            <div className="cart-lines">
-              {cart.length === 0 ? (
-                <div className="empty">
-                  <strong>No items yet</strong>
-                  <span>Scan a barcode or tap a product to begin.</span>
+              {/* Customer searchable dropdown */}
+              <div className="search-select">
+                <label>
+                  <span>Customer</span>
+                  <input
+                    className="field"
+                    placeholder="Search customer by name or phone"
+                    value={checkoutCustomerQuery}
+                    onFocus={() => setCheckoutCustomerOpen(true)}
+                    onChange={(event) => {
+                      setCheckoutCustomerQuery(event.target.value);
+                      setSelectedCheckoutCustomer(null);
+                      setCheckoutCustomerOpen(true);
+                    }}
+                    onBlur={() => window.setTimeout(() => setCheckoutCustomerOpen(false), 150)}
+                  />
+                </label>
+                {checkoutCustomerOpen ? (
+                  <div className="search-select-list">
+                    {checkoutCustomerSearchStatus === 'loading' ? (
+                      <span className="muted search-select-empty">Searching…</span>
+                    ) : null}
+                    {checkoutCustomerMatches.map((customer) => (
+                      <button
+                        type="button"
+                        className="search-select-item"
+                        key={customer.id}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => {
+                          updateCheckoutCustomer(customer);
+                          setCheckoutCustomerOpen(false);
+                        }}
+                      >
+                        <span>
+                          {customer.name}
+                          <span className="muted"> · {customer.phone || 'No phone'}</span>
+                        </span>
+                        <strong>{customer.loyaltyPoints} pts</strong>
+                      </button>
+                    ))}
+                    {checkoutCustomerSearchStatus === 'idle' && checkoutCustomerMatches.length === 0 ? (
+                      <span className="muted search-select-empty">No customers found.</span>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+
+              {/* Selected customer auto-filled info */}
+              {selectedCheckoutCustomer ? (
+                <div className="checkout-customer-card">
+                  <div>
+                    <strong>{selectedCheckoutCustomer.name}</strong>
+                    <span className="muted">{selectedCheckoutCustomer.phone || 'No phone'}</span>
+                  </div>
+                  <div className="right">
+                    <strong>{selectedCheckoutCustomer.loyaltyPoints} pts</strong>
+                    <span className="muted">Loyalty balance</span>
+                  </div>
                 </div>
               ) : (
-                cart.map((item) => (
-                  <div className="cart-line" key={item.id}>
-                    <div className="cart-line-main">
-                      <div>
-                        <strong>{item.name}</strong>
-                        <span>
-                          {item.quantity} x {money.format(item.price)}
-                        </span>
-                      </div>
-                      <div className="cart-line-controls">
-                        <button
-                          className="ghost-button ghost-button-small"
-                          onClick={() => decreaseCartItem(item.id)}
-                          aria-label={`Decrease ${item.name}`}
-                        >
-                          -
-                        </button>
-                        <button
-                          className="ghost-button ghost-button-small"
-                          onClick={() => increaseCartItem(item.id)}
-                          aria-label={`Increase ${item.name}`}
-                        >
-                          +
-                        </button>
-                        <button
-                          className="ghost-button ghost-button-small"
-                          onClick={() => removeCartItem(item.id)}
-                          aria-label={`Remove ${item.name}`}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    </div>
-                    <strong>{money.format(item.price * item.quantity)}</strong>
-                  </div>
-                ))
+                <p className="muted checkout-walkin-note">Select a customer to start the sale.</p>
               )}
+
+              {/* Product + service dropdowns (kept separate) */}
+              <div className="checkout-pickers">
+                <SearchSelect
+                  label="Add product"
+                  placeholder="Search products…"
+                  emptyText="No products found."
+                  options={products
+                    .filter((product) => product.isActive === 1)
+                    .map((product) => ({
+                      id: product.id,
+                      name: product.name,
+                      price: product.price,
+                      meta: `${product.stock} in stock`,
+                    }))}
+                  onPick={(id) => {
+                    const product = products.find((item) => item.id === id);
+                    if (product) addToCart(product);
+                  }}
+                />
+                <SearchSelect
+                  label="Add service"
+                  placeholder="Search services…"
+                  emptyText="No services found."
+                  options={services
+                    .filter((service) => service.isActive === 1)
+                    .map((service) => ({
+                      id: service.id,
+                      name: service.name,
+                      price: service.price,
+                      meta: service.code,
+                    }))}
+                  onPick={(id) => {
+                    const service = services.find((item) => item.id === id);
+                    if (service) addServiceToCart(service);
+                  }}
+                />
+              </div>
             </div>
 
-            <div className="totals">
-              <div>
-                <span>Subtotal</span>
-                <strong>{money.format(subtotal)}</strong>
-              </div>
-              <div>
-                <span>Tax</span>
-                <strong>{money.format(tax)}</strong>
-              </div>
-              <div className="grand">
-                <span>Total</span>
-                <strong>{money.format(total)}</strong>
-              </div>
-            </div>
-
-            <button className="primary-button" onClick={submitSale} disabled={cart.length === 0}>
-              Generate invoice
-            </button>
-
-            <div className="inventory-section inventory-section-muted">
-              <div className="inventory-section-head">
+            <aside className="cart checkout-cart">
+              <div className="cart-header">
                 <div>
-                  <h3>Saved bills</h3>
-                  <span className="muted">Latest service bills</span>
+                  <p className="eyebrow">Checkout basket</p>
+                  <h3>{cart.length} items</h3>
                 </div>
-                <span className="muted">{recentBills.length} stored</span>
+                <div className="cart-header-actions">
+                  <span className={checkoutStatus === 'saved' ? 'pill pill-online' : 'pill'}>{checkoutStatus}</span>
+                </div>
               </div>
-              <div className="customer-history-list">
-                {recentBills.length > 0 ? (
-                  recentBills.slice(0, 6).map((bill) => (
-                    <div className="customer-history-item" key={bill.id}>
-                      <div>
-                        <strong>{bill.customerName}</strong>
-                        <span>
-                          {bill.serviceCode ? `${bill.serviceCode} · ` : ''}
-                          {bill.serviceName}
-                          {bill.notes ? ` · ${bill.notes}` : ''}
-                        </span>
+
+              <div className="cart-lines">
+                {cart.length === 0 ? (
+                  <div className="empty">
+                    <strong>No items yet</strong>
+                    <span>Scan a barcode, tap a product, or add a service to begin.</span>
+                  </div>
+                ) : (
+                  cart.map((item) => (
+                    <div className="cart-line" key={item.id}>
+                      <div className="cart-line-main">
+                        <div>
+                          <strong>{item.name}</strong>
+                          <span>
+                            {item.type === 'service' ? 'Service' : 'Product'} · {item.qty} x {money.format(item.price)}
+                          </span>
+                        </div>
+                        <div className="cart-line-controls">
+                          <button
+                            className="ghost-button ghost-button-small"
+                            onClick={() => decreaseCartItem(item.id)}
+                            aria-label={`Decrease ${item.name}`}
+                          >
+                            -
+                          </button>
+                          <button
+                            className="ghost-button ghost-button-small"
+                            onClick={() => increaseCartItem(item.id)}
+                            aria-label={`Increase ${item.name}`}
+                          >
+                            +
+                          </button>
+                          <button
+                            className="ghost-button ghost-button-small"
+                            onClick={() => removeCartItem(item.id)}
+                            aria-label={`Remove ${item.name}`}
+                          >
+                            Remove
+                          </button>
+                        </div>
                       </div>
-                      <div className="right">
-                        <strong>{money.format(bill.amount)}</strong>
-                        <span>{new Date(bill.createdAt).toLocaleDateString()}</span>
-                      </div>
+                      <strong>{money.format(item.price * item.qty)}</strong>
                     </div>
                   ))
-                ) : (
-                  <span className="muted">No bills created yet.</span>
                 )}
               </div>
-            </div>
-          </aside>
+
+              <div className="totals">
+                <div>
+                  <span>Subtotal</span>
+                  <strong>{money.format(subtotal)}</strong>
+                </div>
+                <div>
+                  <span>Tax</span>
+                  <strong>{money.format(tax)}</strong>
+                </div>
+                <div className="discount-row">
+                  <span>Discount</span>
+                  <div className="discount-controls">
+                    <div className="discount-toggle">
+                      <button
+                        type="button"
+                        className={checkoutDiscountType === 'pkr' ? 'active' : ''}
+                        onClick={() => setCheckoutDiscountType('pkr')}
+                      >
+                        PKR
+                      </button>
+                      <button
+                        type="button"
+                        className={checkoutDiscountType === 'percent' ? 'active' : ''}
+                        onClick={() => setCheckoutDiscountType('percent')}
+                      >
+                        %
+                      </button>
+                    </div>
+                    <input
+                      className="field"
+                      type="number"
+                      min="0"
+                      step={checkoutDiscountType === 'percent' ? '1' : '0.01'}
+                      max={checkoutDiscountType === 'percent' ? '100' : undefined}
+                      value={checkoutDiscount}
+                      onChange={(event) => setCheckoutDiscount(event.target.value)}
+                    />
+                  </div>
+                </div>
+                {checkoutDiscountType === 'percent' && discount > 0 ? (
+                  <div className="discount-applied">
+                    <span>Discount applied</span>
+                    <strong>- {money.format(discount)}</strong>
+                  </div>
+                ) : null}
+                <label>
+                  <span>Payment method</span>
+                  <select
+                    className="field"
+                    value={checkoutPaymentMethod}
+                    onChange={(event) => setCheckoutPaymentMethod(event.target.value)}
+                  >
+                    <option value="Cash">Cash</option>
+                    <option value="Card">Card</option>
+                    <option value="Bank Transfer">Bank Transfer</option>
+                    <option value="Digital Wallet">Digital Wallet</option>
+                  </select>
+                </label>
+                {pointsToEarn > 0 ? (
+                  <div className="points-preview">
+                    <span>Points this sale</span>
+                    <strong>+{pointsToEarn} pts</strong>
+                  </div>
+                ) : null}
+                <div className="grand">
+                  <span>Total</span>
+                  <strong>{money.format(total)}</strong>
+                </div>
+              </div>
+
+              {cart.length > 0 && !selectedCheckoutCustomer ? (
+                <p className="muted checkout-require-note">Select a customer above to complete the sale.</p>
+              ) : null}
+              <button
+                className="primary-button"
+                onClick={submitCheckout}
+                disabled={cart.length === 0 || !selectedCheckoutCustomer}
+              >
+                Complete &amp; view receipt
+              </button>
+
+              <div className="inventory-section inventory-section-muted">
+                <div className="inventory-section-head">
+                  <div>
+                    <h3>Recent transactions</h3>
+                    <span className="muted">Latest receipts from the unified table</span>
+                  </div>
+                  <span className="muted">{recentSales.length} stored</span>
+                </div>
+                <div className="customer-history-list">
+                  {recentSales.length > 0 ? (
+                    recentSales.slice(0, 6).map((transaction) => (
+                      <div className="customer-history-item" key={transaction.id}>
+                        <div>
+                          <strong>{transaction.customerName}</strong>
+                          <span>
+                            {transaction.receiptNo} · {transaction.paymentMethod}
+                          </span>
+                        </div>
+                        <div className="right">
+                          <strong>{money.format(transaction.grandTotal)}</strong>
+                          <span>{new Date(transaction.createdAt).toLocaleDateString()}</span>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <span className="muted">No transactions saved yet.</span>
+                  )}
+                </div>
+              </div>
+            </aside>
           </section>
         ) : view === 'reports' ? (
           <section className="reports-view">
+            <div className="reports-header">
+              <div>
+                <p className="eyebrow">Reports</p>
+                <h2>Business performance at a glance</h2>
+              </div>
+              <span className="pill pill-online">Top method · {reports?.revenue.topPaymentMethod ?? 'Cash'}</span>
+            </div>
+
             <div className="dashboard-metrics">
               <div className="metric-card">
                 <span>Revenue</span>
                 <strong>{reports ? money.format(reports.revenue.totalRevenue) : '...'}</strong>
-                <small>{reports?.revenue.saleCount ?? 0} invoices</small>
+                <small>{reports?.revenue.saleCount ?? 0} transactions</small>
               </div>
               <div className="metric-card">
                 <span>Customers</span>
@@ -1830,160 +2097,169 @@ function App() {
             </div>
 
             <div className="dashboard-grid">
-              <section className="panel dashboard-panel">
+              <section className="panel dashboard-panel report-panel">
                 <div className="dashboard-panel-head">
                   <div>
-                    <p className="eyebrow">Revenue reports</p>
-                    <h2>Sales and billing performance</h2>
+                    <p className="eyebrow">Revenue</p>
+                    <h2>Sales &amp; billing</h2>
                   </div>
-                  <span className="pill pill-online">{reports?.revenue.topPaymentMethod ?? 'Cash'}</span>
                 </div>
-                <div className="list">
-                  <div className="list-item">
-                    <div>
-                      <strong>Total revenue</strong>
-                      <span>Gross billed amount</span>
-                    </div>
-                    <div className="right">
-                      <strong>{reports ? money.format(reports.revenue.totalRevenue) : '...'}</strong>
-                      <span>{reports?.revenue.saleCount ?? 0} sales</span>
-                    </div>
+                <div className="report-stats">
+                  <div className="report-stat">
+                    <span>Revenue</span>
+                    <strong>{reports ? money.format(reports.revenue.totalRevenue) : '...'}</strong>
                   </div>
-                  <div className="list-item">
-                    <div>
-                      <strong>Total tax</strong>
-                      <span>Collected tax</span>
-                    </div>
-                    <div className="right">
-                      <strong>{reports ? money.format(reports.revenue.totalTax) : '...'}</strong>
-                      <span>Across bills</span>
-                    </div>
+                  <div className="report-stat">
+                    <span>Tax collected</span>
+                    <strong>{reports ? money.format(reports.revenue.totalTax) : '...'}</strong>
                   </div>
-                  <div className="list-item">
-                    <div>
-                      <strong>Total discounts</strong>
-                      <span>Applied reductions</span>
-                    </div>
-                    <div className="right">
-                      <strong>{reports ? money.format(reports.revenue.totalDiscount) : '...'}</strong>
-                      <span>Across bills</span>
-                    </div>
+                  <div className="report-stat">
+                    <span>Discounts</span>
+                    <strong>{reports ? money.format(reports.revenue.totalDiscount) : '...'}</strong>
                   </div>
+                </div>
+                <p className="report-list-label">Top products</p>
+                <div className="report-list">
+                  {reports && reports.revenue.topProducts.length > 0 ? (
+                    reports.revenue.topProducts.slice(0, 5).map((product, index) => (
+                      <div className="report-row" key={product.productName}>
+                        <span className="report-rank">{index + 1}</span>
+                        <div className="report-row-main">
+                          <strong>{product.productName}</strong>
+                          <span>{product.quantitySold} sold</span>
+                        </div>
+                        <strong className="report-row-value">{money.format(product.totalAmount)}</strong>
+                      </div>
+                    ))
+                  ) : (
+                    <span className="report-empty">No product sales yet.</span>
+                  )}
                 </div>
               </section>
 
-              <section className="panel dashboard-panel">
+              <section className="panel dashboard-panel report-panel">
                 <div className="dashboard-panel-head">
                   <div>
-                    <p className="eyebrow">Customer reports</p>
+                    <p className="eyebrow">Customers</p>
                     <h2>Customer activity</h2>
                   </div>
                 </div>
-                <div className="list">
-                  <div className="list-item">
-                    <div>
-                      <strong>New this month</strong>
-                      <span>Fresh profiles created</span>
-                    </div>
-                    <div className="right">
-                      <strong>{reports?.customers.newCustomersThisMonth ?? 0}</strong>
-                      <span>customers</span>
-                    </div>
+                <div className="report-stats">
+                  <div className="report-stat">
+                    <span>Total</span>
+                    <strong>{reports?.customers.totalCustomers ?? '...'}</strong>
                   </div>
-                  {reports?.customers.topCustomers.slice(0, 5).map((customer) => (
-                    <div className="list-item" key={customer.id}>
-                      <div>
-                        <strong>{customer.name}</strong>
-                        <span>
-                          {customer.visitsCount} visits · {customer.loyaltyPoints} points
-                        </span>
+                  <div className="report-stat">
+                    <span>Active</span>
+                    <strong>{reports?.customers.activeCustomers ?? 0}</strong>
+                  </div>
+                  <div className="report-stat">
+                    <span>New this month</span>
+                    <strong>{reports?.customers.newCustomersThisMonth ?? 0}</strong>
+                  </div>
+                </div>
+                <p className="report-list-label">Top customers</p>
+                <div className="report-list">
+                  {reports && reports.customers.topCustomers.length > 0 ? (
+                    reports.customers.topCustomers.slice(0, 5).map((customer, index) => (
+                      <div className="report-row" key={customer.id}>
+                        <span className="report-rank">{index + 1}</span>
+                        <div className="report-row-main">
+                          <strong>{customer.name}</strong>
+                          <span>
+                            {customer.visitsCount} visits · {customer.loyaltyPoints} pts
+                          </span>
+                        </div>
+                        <strong className="report-row-value">{money.format(customer.totalSpent)}</strong>
                       </div>
-                      <div className="right">
-                        <strong>{money.format(customer.totalSpent)}</strong>
-                        <span>{customer.lastVisitAt ? new Date(customer.lastVisitAt).toLocaleDateString() : 'No visit'}</span>
-                      </div>
-                    </div>
-                  ))}
+                    ))
+                  ) : (
+                    <span className="report-empty">No customers yet.</span>
+                  )}
                 </div>
               </section>
             </div>
 
             <div className="dashboard-grid">
-              <section className="panel dashboard-panel">
+              <section className="panel dashboard-panel report-panel">
                 <div className="dashboard-panel-head">
                   <div>
-                    <p className="eyebrow">Visit reports</p>
-                    <h2>Services and attendance</h2>
+                    <p className="eyebrow">Visits</p>
+                    <h2>Services &amp; attendance</h2>
                   </div>
                 </div>
-                <div className="list">
-                  <div className="list-item">
-                    <div>
-                      <strong>Total visits</strong>
-                      <span>All recorded sessions</span>
-                    </div>
-                    <div className="right">
-                      <strong>{reports?.visits.totalVisits ?? '...'}</strong>
-                      <span>{reports?.visits.saleVisits ?? 0} from sales</span>
-                    </div>
+                <div className="report-stats">
+                  <div className="report-stat">
+                    <span>Total visits</span>
+                    <strong>{reports?.visits.totalVisits ?? '...'}</strong>
                   </div>
-                  {reports?.visits.topServices.slice(0, 5).map((service) => (
-                    <div className="list-item" key={service.serviceName}>
-                      <div>
-                        <strong>{service.serviceName}</strong>
-                        <span>{service.visitCount} visits</span>
+                  <div className="report-stat">
+                    <span>From checkout</span>
+                    <strong>{reports?.visits.saleVisits ?? 0}</strong>
+                  </div>
+                  <div className="report-stat">
+                    <span>Today</span>
+                    <strong>{reports?.visits.visitsToday ?? 0}</strong>
+                  </div>
+                </div>
+                <p className="report-list-label">Top services</p>
+                <div className="report-list">
+                  {reports && reports.visits.topServices.length > 0 ? (
+                    reports.visits.topServices.slice(0, 5).map((service, index) => (
+                      <div className="report-row" key={service.serviceName}>
+                        <span className="report-rank">{index + 1}</span>
+                        <div className="report-row-main">
+                          <strong>{service.serviceName}</strong>
+                          <span>{service.visitCount} visits</span>
+                        </div>
+                        <strong className="report-row-value">{money.format(service.totalAmount)}</strong>
                       </div>
-                      <div className="right">
-                        <strong>{money.format(service.totalAmount)}</strong>
-                        <span>collected</span>
-                      </div>
-                    </div>
-                  ))}
+                    ))
+                  ) : (
+                    <span className="report-empty">No service visits yet.</span>
+                  )}
                 </div>
               </section>
 
-              <section className="panel dashboard-panel">
+              <section className="panel dashboard-panel report-panel">
                 <div className="dashboard-panel-head">
                   <div>
-                    <p className="eyebrow">Loyalty reports</p>
+                    <p className="eyebrow">Loyalty</p>
                     <h2>Points movement</h2>
                   </div>
                 </div>
-                <div className="list">
-                  <div className="list-item">
-                    <div>
-                      <strong>Points earned</strong>
-                      <span>From completed visits</span>
-                    </div>
-                    <div className="right">
-                      <strong>{reports?.loyalty.totalEarned ?? 0}</strong>
-                      <span>earned</span>
-                    </div>
+                <div className="report-stats">
+                  <div className="report-stat">
+                    <span>Earned</span>
+                    <strong>{reports?.loyalty.totalEarned ?? 0}</strong>
                   </div>
-                  <div className="list-item">
-                    <div>
-                      <strong>Points redeemed</strong>
-                      <span>Used by customers</span>
-                    </div>
-                    <div className="right">
-                      <strong>{reports?.loyalty.totalRedeemed ?? 0}</strong>
-                      <span>redeemed</span>
-                    </div>
+                  <div className="report-stat">
+                    <span>Redeemed</span>
+                    <strong>{reports?.loyalty.totalRedeemed ?? 0}</strong>
                   </div>
-                  {reports?.loyalty.topBalances.slice(0, 5).map((customer) => (
-                    <div className="list-item" key={customer.id}>
-                      <div>
-                        <strong>{customer.name}</strong>
-                        <span>
-                          {customer.earned} earned · {customer.redeemed} redeemed
-                        </span>
+                  <div className="report-stat">
+                    <span>Outstanding</span>
+                    <strong>{reports?.loyalty.outstandingBalance ?? 0}</strong>
+                  </div>
+                </div>
+                <p className="report-list-label">Top balances</p>
+                <div className="report-list">
+                  {reports && reports.loyalty.topBalances.length > 0 ? (
+                    reports.loyalty.topBalances.slice(0, 5).map((customer, index) => (
+                      <div className="report-row" key={customer.id}>
+                        <span className="report-rank">{index + 1}</span>
+                        <div className="report-row-main">
+                          <strong>{customer.name}</strong>
+                          <span>
+                            {customer.earned} earned · {customer.redeemed} redeemed
+                          </span>
+                        </div>
+                        <strong className="report-row-value">{customer.balance} pts</strong>
                       </div>
-                      <div className="right">
-                        <strong>{customer.balance}</strong>
-                        <span>balance</span>
-                      </div>
-                    </div>
-                  ))}
+                    ))
+                  ) : (
+                    <span className="report-empty">No loyalty activity yet.</span>
+                  )}
                 </div>
               </section>
             </div>
@@ -1996,7 +2272,7 @@ function App() {
                   <p className="eyebrow">Treatment catalog</p>
                   <h2>Service / package management</h2>
                 </div>
-                <span className="pill pill-offline">{services.length} active services</span>
+                <span className="pill pill-offline">{activeServices.length} active services</span>
               </div>
 
               <form className="new-item-form" onSubmit={createNewService}>
@@ -2055,6 +2331,20 @@ function App() {
                       required
                     />
                   </label>
+                  <label>
+                    <span>Redeem for free at (points)</span>
+                    <input
+                      className="field"
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={newService.redeemPoints}
+                      onChange={(event) =>
+                        setNewService((current) => ({ ...current, redeemPoints: event.target.value }))
+                      }
+                      placeholder="0 = not redeemable"
+                    />
+                  </label>
                 </div>
 
                 <div className="form-footer">
@@ -2076,7 +2366,7 @@ function App() {
               <div className="inventory-section">
                 <div className="inventory-section-head">
                   <h3>Active services</h3>
-                  <span className="muted">{services.length} showing</span>
+                  <span className="muted">{activeServices.length} showing</span>
                 </div>
                 <div className="inventory-table-wrap">
                   <table className="inventory-table">
@@ -2084,6 +2374,8 @@ function App() {
                       <col className="inventory-col-service" />
                       <col className="inventory-col-stock" />
                       <col className="inventory-col-price" />
+                      <col className="inventory-col-stock" />
+                      <col className="inventory-col-service" />
                       <col className="inventory-col-actions" />
                     </colgroup>
                     <thead>
@@ -2091,11 +2383,13 @@ function App() {
                         <th>Service</th>
                         <th>Code</th>
                         <th>Price</th>
+                        <th>Redeem at</th>
                         <th>Description</th>
+                        <th>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {services.map((service) => (
+                      {activeServices.map((service) => (
                         <tr key={service.id}>
                           <td>
                             <div className="inventory-name-cell">
@@ -2107,8 +2401,25 @@ function App() {
                             <strong>{service.code}</strong>
                           </td>
                           <td className="inventory-cell-number">{money.format(service.price)}</td>
+                          <td className="inventory-cell-number">
+                            {service.redeemPoints > 0 ? (
+                              <strong>{service.redeemPoints} pts</strong>
+                            ) : (
+                              <span className="muted">—</span>
+                            )}
+                          </td>
                           <td>
                             <span className="muted">{service.description}</span>
+                          </td>
+                          <td>
+                            <div className="inventory-actions">
+                              <button
+                                className="danger-button danger-button-small"
+                                onClick={() => softDeleteService(service.id, service.name)}
+                              >
+                                Delete
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -2116,6 +2427,75 @@ function App() {
                   </table>
                 </div>
               </div>
+
+              {deletedServices.length > 0 ? (
+                <div className="inventory-section inventory-section-muted">
+                  <div className="inventory-section-head">
+                    <div>
+                      <h3>Deleted services</h3>
+                      <span className="muted">{deletedServices.length} hidden from POS</span>
+                    </div>
+                    <button
+                      className="ghost-button ghost-button-small"
+                      onClick={() => setShowDeletedServices((current) => !current)}
+                    >
+                      {showDeletedServices ? 'Hide deleted' : 'Show deleted'}
+                    </button>
+                  </div>
+                  {showDeletedServices ? (
+                    <div className="inventory-table-wrap">
+                      <table className="inventory-table">
+                        <colgroup>
+                          <col className="inventory-col-service" />
+                          <col className="inventory-col-stock" />
+                          <col className="inventory-col-price" />
+                          <col className="inventory-col-actions" />
+                        </colgroup>
+                        <thead>
+                          <tr>
+                            <th>Service</th>
+                            <th>Code</th>
+                            <th>Price</th>
+                            <th>Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {deletedServices.map((service) => (
+                            <tr key={service.id} className="inventory-row-deleted">
+                              <td>
+                                <div className="inventory-name-cell">
+                                  <strong>{service.name}</strong>
+                                  <span className="deleted-pill">Deleted</span>
+                                </div>
+                              </td>
+                              <td className="inventory-cell-number">
+                                <strong>{service.code}</strong>
+                              </td>
+                              <td className="inventory-cell-number">{money.format(service.price)}</td>
+                              <td>
+                                <div className="inventory-actions">
+                                  <button
+                                    className="ghost-button ghost-button-small"
+                                    onClick={() => void restoreServiceItem(service.id)}
+                                  >
+                                    Restore
+                                  </button>
+                                  <button
+                                    className="danger-button danger-button-small"
+                                    onClick={() => hardDeleteService(service.id, service.name)}
+                                  >
+                                    Delete permanently
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </section>
         ) : view === 'settings' ? (
@@ -2130,10 +2510,10 @@ function App() {
               </div>
               <div className="dashboard-hero-actions">
                 <button className="ghost-button" onClick={() => void backupDatabase()} disabled={backupStatus === 'saving'}>
-                  {backupStatus === 'saving' ? 'Backing up...' : 'Backup database'}
+                  {backupStatus === 'saving' ? 'Backing up...' : 'Backup to Excel'}
                 </button>
                 <button className="ghost-button" onClick={() => void restoreDatabase()} disabled={restoreStatus === 'saving'}>
-                  {restoreStatus === 'saving' ? 'Restoring...' : 'Restore database'}
+                  {restoreStatus === 'saving' ? 'Restoring...' : 'Restore from Excel'}
                 </button>
               </div>
             </div>
@@ -2234,29 +2614,15 @@ function App() {
                 <form className="new-item-form" onSubmit={saveLoyaltySettings}>
                   <div className="form-grid">
                     <label>
-                      <span>Points per 100 currency</span>
+                      <span>Rupees per point (earning)</span>
                       <input
                         className="field"
                         type="number"
-                        min="0"
+                        min="1"
                         step="1"
-                        value={loyaltyForm.pointsPer100Currency}
+                        value={loyaltyForm.currencyPerPoint}
                         onChange={(event) =>
-                          setLoyaltyForm((current) => ({ ...current, pointsPer100Currency: event.target.value }))
-                        }
-                        required
-                      />
-                    </label>
-                    <label>
-                      <span>Redemption value per point</span>
-                      <input
-                        className="field"
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={loyaltyForm.redemptionValuePerPoint}
-                        onChange={(event) =>
-                          setLoyaltyForm((current) => ({ ...current, redemptionValuePerPoint: event.target.value }))
+                          setLoyaltyForm((current) => ({ ...current, currencyPerPoint: event.target.value }))
                         }
                         required
                       />
@@ -2283,7 +2649,7 @@ function App() {
                     </button>
                     <div className="form-message">
                       <span className="muted">
-                        Earn is calculated per 100 currency spent. Redemption respects the minimum threshold.
+                        Customers earn 1 point for every {loyaltyForm.currencyPerPoint || '15'} PKR spent on services.
                       </span>
                     </div>
                   </div>
@@ -2302,8 +2668,8 @@ function App() {
                 <div className="list">
                   <div className="list-item">
                     <div>
-                      <strong>Backup database</strong>
-                      <span>Create a local SQLite copy before major changes.</span>
+                      <strong>Backup to Excel</strong>
+                      <span>Export all data to a dated .xlsx workbook you can open in Excel.</span>
                     </div>
                     <div className="right">
                       <button className="ghost-button" onClick={() => void backupDatabase()} disabled={backupStatus === 'saving'}>
@@ -2314,8 +2680,8 @@ function App() {
                   </div>
                   <div className="list-item">
                     <div>
-                      <strong>Restore database</strong>
-                      <span>Replace the current data with a saved SQLite backup.</span>
+                      <strong>Restore from Excel</strong>
+                      <span>Replace the current data with a saved .xlsx backup.</span>
                     </div>
                     <div className="right">
                       <button className="danger-button" onClick={() => void restoreDatabase()} disabled={restoreStatus === 'saving'}>
@@ -2433,6 +2799,20 @@ function App() {
                       required
                     />
                   </label>
+                  <label>
+                    <span>Redeem for free at (points)</span>
+                    <input
+                      className="field"
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={newItem.redeemPoints}
+                      onChange={(event) =>
+                        setNewItem((current) => ({ ...current, redeemPoints: event.target.value }))
+                      }
+                      placeholder="0 = not redeemable"
+                    />
+                  </label>
                 </div>
 
                 <div className="form-footer">
@@ -2445,7 +2825,7 @@ function App() {
                     ) : newItemStatus === 'saved' ? (
                       <span className="success-text">Item added to local inventory.</span>
                     ) : (
-                      <span className="muted">This saves locally in SQLite.</span>
+                      <span className="muted">This saves to the local database.</span>
                     )}
                   </div>
                 </div>
@@ -2462,13 +2842,15 @@ function App() {
                       <col className="inventory-col-service" />
                       <col className="inventory-col-stock" />
                       <col className="inventory-col-price" />
+                      <col className="inventory-col-stock" />
                       <col className="inventory-col-actions" />
                     </colgroup>
                     <thead>
                       <tr>
-                        <th>Service</th>
+                        <th>Item</th>
                         <th>Stock</th>
                         <th>Price</th>
+                        <th>Redeem at</th>
                         <th>Actions</th>
                       </tr>
                     </thead>
@@ -2487,6 +2869,13 @@ function App() {
                             <strong>{item.stock}</strong>
                           </td>
                           <td className="inventory-cell-number">{money.format(item.price)}</td>
+                          <td className="inventory-cell-number">
+                            {item.redeemPoints > 0 ? (
+                              <strong>{item.redeemPoints} pts</strong>
+                            ) : (
+                              <span className="muted">—</span>
+                            )}
+                          </td>
                           <td>
                             <div className="inventory-action-cell">
                               <div className="inventory-actions">
@@ -2551,6 +2940,9 @@ function App() {
                           <div className="inventory-action-cell">
                             <span className="inventory-action-label">Actions</span>
                             <div className="inventory-actions">
+                              <button className="ghost-button ghost-button-small" onClick={() => void restoreItem(item.id)}>
+                                Restore
+                              </button>
                               <button className="danger-button danger-button-small" onClick={() => hardDeleteItem(item.id, item.name)}>
                                 Delete permanently
                               </button>
@@ -2581,6 +2973,8 @@ function App() {
                           ? 'New bill'
                         : customerModal === 'edit'
                           ? 'Edit customer'
+                        : customerModal === 'ledger'
+                          ? 'Transaction history'
                           : 'Redeem loyalty'}
                   </p>
                   <h2>
@@ -2592,6 +2986,8 @@ function App() {
                           ? 'Select a customer and service'
                         : customerModal === 'edit'
                           ? customerProfile?.customer.name || 'Update customer'
+                        : customerModal === 'ledger'
+                          ? `${customerProfile?.customer.name || 'Customer'} — full ledger`
                           : 'Spend loyalty points'}
                   </h2>
                 </div>
@@ -2958,44 +3354,183 @@ function App() {
                     </div>
                   </div>
                 </form>
-              ) : (
-                <form
-                  className="new-item-form"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    void redeemCustomerPoints();
-                  }}
-                >
-                  <div className="form-grid">
-                    <label>
-                      <span>Points to redeem</span>
-                      <input
-                        className="field"
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={redeemPoints}
-                        onChange={(event) => setRedeemPoints(event.target.value)}
-                        required
-                      />
-                    </label>
-                  </div>
-                  <div className="form-footer">
-                    <button className="primary-button" type="submit" disabled={redeemStatus === 'saving'}>
-                      {redeemStatus === 'saving' ? 'Saving...' : 'Redeem points'}
-                    </button>
-                    <div className="form-message">
-                      {redeemError ? (
-                        <span className="error-text">{redeemError}</span>
-                      ) : redeemStatus === 'saved' ? (
-                        <span className="success-text">Points redeemed.</span>
-                      ) : (
-                        <span className="muted">Subtracts from the customer balance and logs the transaction.</span>
-                      )}
+              ) : customerModal === 'ledger' ? (
+                <div className="customer-ledger">
+                  {customerProfile && customerProfile.ledger.length > 0 ? (
+                    <div className="customer-history-list customer-ledger-list">
+                      {customerProfile.ledger.map((entry) => (
+                        <div className="customer-ledger-entry" key={entry.id}>
+                          <div className="customer-ledger-entry-head">
+                            <div>
+                              <strong>{new Date(entry.createdAt).toLocaleString()}</strong>
+                              <span className="muted">
+                                {entry.receiptNo} · {entry.paymentMethod}
+                              </span>
+                            </div>
+                            <div className="right">
+                              <strong>{money.format(entry.grandTotal)}</strong>
+                              <span className="muted">
+                                {entry.pointsEarned > 0 ? `+${entry.pointsEarned} pts` : 'No points'}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="customer-ledger-items">
+                            {entry.items.map((item, index) => (
+                              <div className="customer-ledger-item" key={`${entry.id}-${index}`}>
+                                <span>
+                                  <span className={`pill ${item.itemType === 'service' ? 'pill-online' : ''}`}>
+                                    {item.itemType}
+                                  </span>{' '}
+                                  {item.name} · {item.qty} x {money.format(item.price)}
+                                </span>
+                                <strong>{money.format(item.lineTotal)}</strong>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                  </div>
-                </form>
+                  ) : (
+                    <span className="muted">No transactions recorded for this customer yet.</span>
+                  )}
+                </div>
+              ) : (
+                <div className="new-item-form">
+                  {(() => {
+                    const balance = customerProfile?.customer.loyaltyPoints ?? 0;
+                    // Only services with an explicit redeem price the customer can afford.
+                    const affordable = services.filter(
+                      (service) =>
+                        service.isActive !== 0 &&
+                        service.redeemPoints > 0 &&
+                        service.redeemPoints <= balance
+                    );
+                    return (
+                      <div className="redeem-services">
+                        <div className="inventory-section-head">
+                          <div>
+                            <h3>Free services on {balance} points</h3>
+                            <span className="muted">Tap a service to redeem it for this customer</span>
+                          </div>
+                        </div>
+                        <div className="customer-summary-list">
+                          {affordable.length > 0 ? (
+                            affordable.map((service) => (
+                              <button
+                                type="button"
+                                className="customer-summary-item redeem-service-item"
+                                key={service.id}
+                                disabled={redeemStatus === 'saving'}
+                                onClick={() => void redeemService(service)}
+                              >
+                                <div>
+                                  <strong>{service.name}</strong>
+                                  <span>{money.format(service.price)}</span>
+                                </div>
+                                <div className="right">
+                                  <strong>{service.redeemPoints} pts</strong>
+                                  <span>redeem</span>
+                                </div>
+                              </button>
+                            ))
+                          ) : (
+                            <span className="muted">No service can be redeemed with these points yet.</span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
               )}
+            </section>
+          </div>
+        ) : null}
+
+        {receiptPreview ? (
+          <div className="modal-backdrop" onClick={() => setReceiptPreview(null)} role="presentation">
+            <section
+              className="modal-card receipt-modal"
+              onClick={(event) => event.stopPropagation()}
+              role="dialog"
+              aria-modal="true"
+            >
+              <div className="dashboard-panel-head">
+                <div>
+                  <p className="eyebrow">Receipt</p>
+                  <h2>{receiptPreview.receiptNo}</h2>
+                </div>
+                <button className="ghost-button ghost-button-small" type="button" onClick={() => setReceiptPreview(null)}>
+                  Close
+                </button>
+              </div>
+
+              <div className="receipt-paper">
+                <h3 className="receipt-salon">{settings?.salonInfo.name ?? 'Offline POS'}</h3>
+                {settings?.salonInfo.tagline ? (
+                  <p className="receipt-muted">{settings.salonInfo.tagline}</p>
+                ) : null}
+                {settings?.salonInfo.phone ? (
+                  <p className="receipt-muted">{settings.salonInfo.phone}</p>
+                ) : null}
+                {settings?.salonInfo.address ? (
+                  <p className="receipt-muted">{settings.salonInfo.address}</p>
+                ) : null}
+
+                <div className="receipt-divider" />
+                <p className="receipt-muted">Receipt: {receiptPreview.receiptNo}</p>
+                <p className="receipt-muted">Customer: {receiptPreview.customerName}</p>
+                <p className="receipt-muted">
+                  {receiptPreview.cashierName} · {new Date(receiptPreview.createdAt).toLocaleString()}
+                </p>
+                <div className="receipt-divider" />
+
+                <div className="receipt-items">
+                  {receiptPreview.detailedItems.map((item) => (
+                    <div className="receipt-item" key={item.id}>
+                      <div>
+                        <span>{item.name}</span>
+                        <span className="receipt-muted">
+                          {item.qty} x {money.format(item.price)}
+                        </span>
+                      </div>
+                      <strong>{money.format(item.lineTotal)}</strong>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="receipt-divider" />
+                <div className="receipt-total-row">
+                  <span>Subtotal</span>
+                  <span>{money.format(receiptPreview.subtotal)}</span>
+                </div>
+                <div className="receipt-total-row">
+                  <span>Tax</span>
+                  <span>{money.format(receiptPreview.taxTotal)}</span>
+                </div>
+                <div className="receipt-total-row">
+                  <span>Discount</span>
+                  <span>{money.format(receiptPreview.discountTotal)}</span>
+                </div>
+                <div className="receipt-total-row receipt-grand">
+                  <span>Total</span>
+                  <span>{money.format(receiptPreview.grandTotal)}</span>
+                </div>
+                <div className="receipt-divider" />
+                <p className="receipt-muted">Payment: {receiptPreview.paymentMethod}</p>
+                {receiptPreview.loyaltyPointsEarned > 0 ? (
+                  <p className="receipt-muted">Points earned: +{receiptPreview.loyaltyPointsEarned}</p>
+                ) : null}
+                <p className="receipt-thanks">Thank you for your visit!</p>
+              </div>
+
+              <div className="receipt-actions">
+                <button className="primary-button" type="button" onClick={printCurrentReceipt}>
+                  Print receipt
+                </button>
+                <button className="ghost-button" type="button" onClick={() => setReceiptPreview(null)}>
+                  Done
+                </button>
+              </div>
             </section>
           </div>
         ) : null}

@@ -86,7 +86,9 @@ export class SyncService {
       let syncedCount = 0;
 
       for (const row of pendingRows) {
-        if (row.entityType === 'sale') {
+        if (row.entityType === 'transaction') {
+          await syncTransaction(sql, row);
+        } else if (row.entityType === 'sale') {
           await syncSale(sql, row);
         } else if (row.entityType === 'inventory_movement') {
           await syncInventoryMovement(sql, row);
@@ -122,6 +124,40 @@ export class SyncService {
 }
 
 async function ensureSchema(sql: NeonClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS transactions (
+      id TEXT PRIMARY KEY,
+      receipt_no TEXT NOT NULL,
+      customer_id TEXT,
+      customer_name TEXT NOT NULL,
+      cashier_name TEXT NOT NULL,
+      subtotal REAL NOT NULL,
+      tax_total REAL NOT NULL,
+      discount_total REAL NOT NULL,
+      grand_total REAL NOT NULL,
+      payment_method TEXT NOT NULL,
+      loyalty_points_earned INTEGER NOT NULL DEFAULT 0,
+      item_count INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      origin_type TEXT,
+      origin_id TEXT
+    )
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS transaction_items (
+      id TEXT PRIMARY KEY,
+      transaction_id TEXT NOT NULL,
+      item_type TEXT NOT NULL,
+      item_id TEXT,
+      name TEXT NOT NULL,
+      price REAL NOT NULL,
+      qty INTEGER NOT NULL,
+      tax_rate REAL NOT NULL DEFAULT 0,
+      line_total REAL NOT NULL
+    )
+  `;
+
   await sql`
     CREATE TABLE IF NOT EXISTS sales (
       id TEXT PRIMARY KEY,
@@ -187,6 +223,102 @@ async function ensureSchema(sql: NeonClient) {
       source TEXT NOT NULL DEFAULT 'manual'
     )
   `;
+}
+
+async function syncTransaction(sql: NeonClient, row: SyncQueueRow) {
+  if (row.entityType !== 'transaction') return;
+
+  const payload = JSON.parse(row.payload) as {
+    id: string;
+    receiptNo: string;
+    customerId: string | null;
+    customerName: string;
+    cashierName: string;
+    subtotal: number;
+    taxTotal: number;
+    discountTotal: number;
+    grandTotal: number;
+    paymentMethod: string;
+    loyaltyPointsEarned: number;
+    itemCount: number;
+    createdAt: string;
+    originType: string | null;
+    originId: string | null;
+    detailedItems: Array<{
+      id: string;
+      itemType: string;
+      itemId: string | null;
+      name: string;
+      price: number;
+      qty: number;
+      taxRate: number;
+      lineTotal: number;
+    }>;
+  };
+
+  await sql`
+    INSERT INTO transactions (
+      id,
+      receipt_no,
+      customer_id,
+      customer_name,
+      cashier_name,
+      subtotal,
+      tax_total,
+      discount_total,
+      grand_total,
+      payment_method,
+      loyalty_points_earned,
+      item_count,
+      created_at,
+      origin_type,
+      origin_id
+    ) VALUES (
+      ${payload.id},
+      ${payload.receiptNo},
+      ${payload.customerId},
+      ${payload.customerName},
+      ${payload.cashierName},
+      ${payload.subtotal},
+      ${payload.taxTotal},
+      ${payload.discountTotal},
+      ${payload.grandTotal},
+      ${payload.paymentMethod},
+      ${payload.loyaltyPointsEarned},
+      ${payload.itemCount},
+      ${payload.createdAt},
+      ${payload.originType},
+      ${payload.originId}
+    )
+    ON CONFLICT (id) DO NOTHING
+  `;
+
+  for (const item of payload.detailedItems) {
+    await sql`
+      INSERT INTO transaction_items (
+        id,
+        transaction_id,
+        item_type,
+        item_id,
+        name,
+        price,
+        qty,
+        tax_rate,
+        line_total
+      ) VALUES (
+        ${item.id},
+        ${payload.id},
+        ${item.itemType},
+        ${item.itemId},
+        ${item.name},
+        ${item.price},
+        ${item.qty},
+        ${item.taxRate},
+        ${item.lineTotal}
+      )
+      ON CONFLICT (id) DO NOTHING
+    `;
+  }
 }
 
 async function syncSale(sql: NeonClient, row: SyncQueueRow) {

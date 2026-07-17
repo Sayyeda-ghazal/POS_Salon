@@ -5,14 +5,21 @@ import {
   backupDatabase,
   deleteProduct,
   deleteProductPermanently,
+  restoreProduct,
   createProduct,
   createCustomer,
   createService,
+  listAllServices,
+  deleteService,
+  restoreService,
+  deleteServicePermanently,
   createBill,
   createVisit,
+  createTransaction,
   redeemCustomerPoints,
   createSale,
   deleteCustomer,
+  getRecentTransactions,
   getRecentSales,
   getRecentBills,
   getStats,
@@ -61,14 +68,18 @@ function createWindow() {
 function buildReceiptHtml(payload: {
   receiptNo: string;
   cashierName: string;
+  customerName?: string;
   paymentMethod: string;
   createdAt: string;
   subtotal: number;
   taxTotal: number;
   discountTotal: number;
   grandTotal: number;
+  pointsEarned?: number;
   detailedItems: Array<{
-    productName: string;
+    name?: string;
+    productName?: string;
+    itemType?: string;
     quantity: number;
     unitPrice: number;
     lineTotal: number;
@@ -84,7 +95,7 @@ function buildReceiptHtml(payload: {
     .map(
       (item) => `
       <tr>
-        <td>${item.productName}<br><span>${item.quantity} x ${money.format(item.unitPrice)}</span></td>
+        <td>${item.name ?? item.productName ?? 'Item'}<br><span>${item.quantity} x ${money.format(item.unitPrice)}</span></td>
         <td style="text-align:right">${money.format(item.lineTotal)}</td>
       </tr>`
     )
@@ -140,6 +151,7 @@ function buildReceiptHtml(payload: {
         <p class="muted">${payload.receiptNo}</p>
         <p class="muted">${salonInfo.phone}${salonInfo.email ? ` · ${salonInfo.email}` : ''}</p>
         <p class="muted">${salonInfo.address}</p>
+        <p class="muted">Customer: ${payload.customerName || 'Walk-in'}</p>
         <p class="muted">${payload.cashierName} · ${new Date(payload.createdAt).toLocaleString()}</p>
         <table>${rows}</table>
         <div class="totals">
@@ -149,6 +161,8 @@ function buildReceiptHtml(payload: {
           <div class="grand"><span>Total</span><span>${money.format(payload.grandTotal)}</span></div>
         </div>
         <p class="muted" style="margin-top:14px;">Payment: ${payload.paymentMethod}</p>
+        ${payload.pointsEarned ? `<p class="muted">Points earned: +${payload.pointsEarned}</p>` : ''}
+        <p class="muted" style="margin-top:14px; text-align:center;">Thank you for your visit!</p>
       </body>
     </html>
   `;
@@ -176,10 +190,11 @@ app.whenReady().then(() => {
   ipcMain.handle('settings:update-salon', async (_event, payload) => updateSalonInfo(payload));
   ipcMain.handle('settings:update-loyalty', async (_event, payload) => updateLoyaltyRules(payload));
   ipcMain.handle('database:backup', async () => {
+    const today = new Date().toISOString().slice(0, 10);
     const result = await dialog.showSaveDialog({
-      title: 'Backup Offline POS Database',
-      defaultPath: `offline-pos-backup-${new Date().toISOString().slice(0, 10)}.sqlite3`,
-      filters: [{ name: 'SQLite Database', extensions: ['sqlite3', 'db'] }],
+      title: 'Backup Offline POS Data',
+      defaultPath: `salon-backup-${today}.xlsx`,
+      filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }],
     });
     if (result.canceled || !result.filePath) {
       return { saved: false as const };
@@ -189,9 +204,9 @@ app.whenReady().then(() => {
   });
   ipcMain.handle('database:restore', async () => {
     const result = await dialog.showOpenDialog({
-      title: 'Restore Offline POS Database',
+      title: 'Restore Offline POS Data',
       properties: ['openFile'],
-      filters: [{ name: 'SQLite Database', extensions: ['sqlite3', 'db'] }],
+      filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }],
     });
     if (result.canceled || result.filePaths.length === 0) {
       return { restored: false as const };
@@ -203,8 +218,10 @@ app.whenReady().then(() => {
   ipcMain.handle('customers:list', async () => listCustomers());
   ipcMain.handle('customers:find', async (_event, payload) => findCustomers(payload?.query ?? '', payload?.limit ?? 10));
   ipcMain.handle('customers:profile', async (_event, payload) => getCustomerProfile(payload?.customerId ?? ''));
+  ipcMain.handle('transactions:recent', async (_event, payload) => getRecentTransactions(payload?.limit ?? 10));
   ipcMain.handle('sales:recent', async () => getRecentSales());
   ipcMain.handle('bills:recent', async () => getRecentBills());
+  ipcMain.handle('transactions:create', async (_event, payload) => createTransaction(payload));
   ipcMain.handle('sales:create', async (_event, payload) => createSale(payload));
   ipcMain.handle('customers:create', async (_event, payload) => createCustomer(payload));
   ipcMain.handle('customers:update', async (_event, payload) => updateCustomer(payload));
@@ -214,8 +231,15 @@ app.whenReady().then(() => {
   ipcMain.handle('loyalty:redeem', async (_event, payload) => redeemCustomerPoints(payload));
   ipcMain.handle('products:create', async (_event, payload) => createProduct(payload));
   ipcMain.handle('services:list', async () => listServices());
+  ipcMain.handle('services:list-all', async () => listAllServices());
   ipcMain.handle('services:create', async (_event, payload) => createService(payload));
+  ipcMain.handle('services:delete', async (_event, payload) => deleteService(payload));
+  ipcMain.handle('services:restore', async (_event, payload) => restoreService(payload));
+  ipcMain.handle('services:delete-permanent', async (_event, payload) =>
+    deleteServicePermanently(payload)
+  );
   ipcMain.handle('products:delete', async (_event, payload) => deleteProduct(payload));
+  ipcMain.handle('products:restore', async (_event, payload) => restoreProduct(payload));
   ipcMain.handle('products:delete-permanent', async (_event, payload) =>
     deleteProductPermanently(payload)
   );
