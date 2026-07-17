@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "description": "A polished offline-first POS desktop app",
+  "author": "Offline POS",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
@@ -14,15 +15,14 @@
     "build": "npm run build:electron && vite build",
     "preview": "vite preview",
     "electron:build": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:linux": "npm run build && electron-builder --linux",
     "rebuild:native": "electron-builder install-app-deps",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
     "@neondatabase/serverless": "^0.10.4",
     "better-sqlite3": "^11.8.1",
-    "electron": "^37.2.0",
-    "react": "^19.1.1",
-    "react-dom": "^19.1.1",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
@@ -30,7 +30,10 @@
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^5.0.2",
     "concurrently": "^9.2.1",
+    "electron": "^37.2.0",
     "electron-builder": "^26.0.12",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
     "typescript": "^5.9.2",
     "vite": "^7.1.3",
     "wait-on": "^8.0.5"
@@ -38,13 +41,33 @@
   "build": {
     "appId": "com.offlinepos.desktop",
     "productName": "Offline POS",
+    "directories": {
+      "buildResources": "assets",
+      "output": "release"
+    },
     "files": [
       "dist/**",
       "dist-electron/**",
       "package.json"
     ],
-    "directories": {
-      "buildResources": "assets"
+    "asarUnpack": [
+      "**/node_modules/better-sqlite3/**"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Office"
     }
   }
 }
