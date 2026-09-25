@@ -1,5 +1,16 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import type { Product, ServicePackage } from '../electron/schema';
+import {
+  hasErrors,
+  parseNumber,
+  validateCustomer,
+  validateDiscount,
+  validateLoyaltyRules,
+  validateProduct,
+  validateSalonInfo,
+  validateService,
+  type FieldErrors,
+} from '../electron/validation';
 
 type CartLine = {
   id: string;
@@ -167,6 +178,7 @@ type ReportSnapshot = {
     visitsToday: number;
     manualVisits: number;
     saleVisits: number;
+    checkoutVisits: number;
     topServices: CustomerServiceSummary[];
     recentVisits: VisitRow[];
   };
@@ -268,6 +280,26 @@ const money = new Intl.NumberFormat('en-PK', {
 });
 
 const CASHIER_NAME = 'Amina Khan';
+
+const FIX_FIELDS_MESSAGE = 'Please fix the highlighted fields.';
+
+const fieldClass = (error?: string) => (error ? 'field field-invalid' : 'field');
+
+function FieldHint({ message }: { message?: string }) {
+  return message ? (
+    <small className="field-error" role="alert">
+      {message}
+    </small>
+  ) : null;
+}
+
+// Electron wraps main-process errors as "Error invoking remote method '...': Error: <msg>".
+// Strip that prefix so the cashier sees only the real reason.
+function errorMessage(error: unknown, fallback: string) {
+  const raw = error instanceof Error ? error.message : String(error ?? '');
+  const cleaned = raw.replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^Error:\s*/, '').trim();
+  return cleaned || fallback;
+}
 
 // Loyalty conversion (mirrors backend): 15 PKR of service = 1 point,
 // and 1 point is worth 15 PKR of service value when redeeming.
@@ -377,7 +409,16 @@ function App() {
   const [checkoutPaymentMethod, setCheckoutPaymentMethod] = useState('Cash');
   const [checkoutDiscount, setCheckoutDiscount] = useState('0.00');
   const [checkoutDiscountType, setCheckoutDiscountType] = useState<'pkr' | 'percent'>('pkr');
-  const [checkoutStatus, setCheckoutStatus] = useState<'ready' | 'saved'>('ready');
+  const [checkoutStatus, setCheckoutStatus] = useState<'ready' | 'saving' | 'saved' | 'error'>('ready');
+  const [checkoutError, setCheckoutError] = useState('');
+  const [showProductForm, setShowProductForm] = useState(false);
+  // Forms only show field errors after the first submit attempt, then re-check live as the user types.
+  const [attempted, setAttempted] = useState<Record<string, boolean>>({});
+  const markAttempted = (form: string) => setAttempted((current) => ({ ...current, [form]: true }));
+  const resetAttempted = (form: string) => setAttempted((current) => ({ ...current, [form]: false }));
+  const [showServiceForm, setShowServiceForm] = useState(false);
+  // Synchronous guard: state updates are async, so a fast double-click could slip past a state check.
+  const checkoutInFlight = useRef(false);
   const [checkoutCustomerOpen, setCheckoutCustomerOpen] = useState(false);
   const [receiptPreview, setReceiptPreview] = useState<SaleResult | null>(null);
   const [newItem, setNewItem] = useState({
@@ -387,7 +428,7 @@ function App() {
     category: '',
     price: '0.00',
     stock: '0',
-    taxRate: '0.08',
+    taxRate: '0',
     redeemPoints: '0',
   });
   const [newItemStatus, setNewItemStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
@@ -472,6 +513,24 @@ function App() {
   const [customerModal, setCustomerModal] = useState<'customer' | 'visit' | 'edit' | 'redeem' | 'bill' | 'ledger' | null>(null);
   const scanBuffer = useRef('');
   const scanTimer = useRef<number | null>(null);
+  const salonName = settings?.salonInfo.name?.trim() || 'Salon POS';
+  const salonInitials =
+    salonName
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((word) => word[0]?.toUpperCase() ?? '')
+      .join('') || 'S';
+  const pageHeaders: Record<string, { title: string; description: string }> = {
+    dashboard: { title: 'Dashboard', description: "Today's activity at a glance." },
+    customers: { title: 'Customers', description: 'Find clients, view their history and manage loyalty points.' },
+    checkout: { title: 'Checkout', description: 'Build the bill, take payment and print the receipt.' },
+    services: { title: 'Services', description: 'Treatments offered, with prices and loyalty redemption.' },
+    reports: { title: 'Reports', description: 'Revenue, visits, customers and loyalty performance.' },
+    inventory: { title: 'Inventory', description: 'Retail products, stock levels and pricing.' },
+    settings: { title: 'Settings', description: 'Salon details, loyalty rules and data backup.' },
+  };
+  const pageHeader = pageHeaders[view] ?? pageHeaders.dashboard;
   const navItems = [
     { key: 'dashboard', label: 'Dashboard', icon: <DashboardIcon /> },
     { key: 'customers', label: 'Customers', icon: <CustomersIcon /> },
@@ -719,7 +778,7 @@ function App() {
       .catch((error) => {
         if (!active) return;
         setCustomerProfile(null);
-        setCustomerFormError(error instanceof Error ? error.message : 'Could not load customer profile');
+        setCustomerFormError(errorMessage(error, 'Could not load customer profile'));
         setCustomerProfileStatus('idle');
       })
       .finally(() => {
@@ -764,6 +823,16 @@ function App() {
       ? Math.min(subtotal, (subtotal * Math.max(0, Math.min(100, discountInput))) / 100)
       : Math.min(subtotal + tax, Math.max(0, discountInput));
   const total = Math.max(0, subtotal + tax - discount);
+  const discountError = validateDiscount(checkoutDiscount, checkoutDiscountType, subtotal + tax);
+  const noErrors: FieldErrors = {};
+  // Tax is entered as a percentage in the form and stored as a fraction.
+  const productInput = { ...newItem, taxRate: parseNumber(newItem.taxRate) / 100 };
+  const productErrors = attempted.product ? validateProduct(productInput) : noErrors;
+  const serviceErrors = attempted.service ? validateService(newService) : noErrors;
+  const salonErrors = attempted.salon ? validateSalonInfo(salonForm) : noErrors;
+  const loyaltyErrors = attempted.loyalty ? validateLoyaltyRules(loyaltyForm) : noErrors;
+  const newCustomerErrors = attempted.newCustomer ? validateCustomer(newCustomer) : noErrors;
+  const customerFormErrors = attempted.customerForm ? validateCustomer(customerForm) : noErrors;
   // Points preview: services only, using the configurable earning rate.
   const currencyPerPoint = settings?.loyaltyRules.currencyPerPoint || PKR_PER_POINT;
   const serviceSubtotal = cart
@@ -893,42 +962,67 @@ function App() {
   };
 
   const submitCheckout = async () => {
-    if (cart.length === 0) return;
-    const result = (await window.pos.createTransaction({
-      cashierName: CASHIER_NAME,
-      paymentMethod: checkoutPaymentMethod,
-      discountTotal: discount,
-      customerId: selectedCheckoutCustomer?.id ?? null,
-      customerName: selectedCheckoutCustomer?.name ?? 'Walk-in',
-      items: cart.map((item) => ({
-        type: item.type,
-        itemId: item.itemId,
-        name: item.name,
-        price: item.price,
-        qty: item.qty,
-        taxRate: item.taxRate,
-      })),
-    })) as SaleResult;
+    if (cart.length === 0 || checkoutInFlight.current || discountError) return;
+    checkoutInFlight.current = true;
+    setCheckoutStatus('saving');
+    setCheckoutError('');
+    let result: SaleResult;
+    try {
+      result = (await window.pos.createTransaction({
+        cashierName: CASHIER_NAME,
+        paymentMethod: checkoutPaymentMethod,
+        discountTotal: discount,
+        customerId: selectedCheckoutCustomer?.id ?? null,
+        customerName: selectedCheckoutCustomer?.name ?? 'Walk-in',
+        items: cart.map((item) => ({
+          type: item.type,
+          itemId: item.itemId,
+          name: item.name,
+          price: item.price,
+          qty: item.qty,
+          taxRate: item.taxRate,
+        })),
+      })) as SaleResult;
+    } catch (error) {
+      // Keep the cart intact so the cashier can fix the problem and retry.
+      setCheckoutStatus('error');
+      setCheckoutError(errorMessage(error, 'Could not complete the sale. Please try again.'));
+      checkoutInFlight.current = false;
+      return;
+    }
     clearCheckout();
     setCheckoutStatus('saved');
     // Show an on-screen receipt preview; the user prints from there.
     setReceiptPreview(result);
-    await refreshData();
+    checkoutInFlight.current = false;
+    try {
+      await refreshData();
+    } catch {
+      // The sale is saved; a failed refresh only means stale lists until the next refresh.
+    }
   };
 
   const printCurrentReceipt = async () => {
     if (!receiptPreview) return;
-    await window.pos.printReceipt({
-      ...receiptPreview,
-      pointsEarned: receiptPreview.loyaltyPointsEarned,
-      detailedItems: receiptPreview.detailedItems.map((item) => ({
-        itemType: item.itemType,
-        name: item.name,
-        quantity: item.qty,
-        unitPrice: item.price,
-        lineTotal: item.lineTotal,
-      })),
-    });
+    try {
+      const result = await window.pos.printReceipt({
+        ...receiptPreview,
+        pointsEarned: receiptPreview.loyaltyPointsEarned,
+        detailedItems: receiptPreview.detailedItems.map((item) => ({
+          itemType: item.itemType,
+          name: item.name,
+          quantity: item.qty,
+          unitPrice: item.price,
+          lineTotal: item.lineTotal,
+        })),
+      });
+      // A cancelled print dialog is the cashier's choice, not an error.
+      if (!result.success && result.failureReason && result.failureReason !== 'cancelled') {
+        alert(`Receipt did not print: ${result.failureReason}. Check the printer and try again.`);
+      }
+    } catch (error) {
+      alert(`Receipt did not print: ${errorMessage(error, 'unknown printer error')}`);
+    }
   };
 
   const adjustStock = async (productId: string, delta: number) => {
@@ -986,6 +1080,12 @@ function App() {
 
   const createNewItem = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    markAttempted('product');
+    if (hasErrors(validateProduct(productInput))) {
+      setNewItemStatus('error');
+      setNewItemError(FIX_FIELDS_MESSAGE);
+      return;
+    }
     setNewItemStatus('saving');
     setNewItemError('');
 
@@ -997,9 +1097,10 @@ function App() {
         category: newItem.category,
         price: Number(newItem.price),
         stock: Number(newItem.stock),
-        taxRate: Number(newItem.taxRate),
+        taxRate: productInput.taxRate,
         redeemPoints: Number(newItem.redeemPoints) || 0,
       });
+      resetAttempted('product');
       setNewItem({
         sku: '',
         barcode: '',
@@ -1007,19 +1108,25 @@ function App() {
         category: '',
         price: '0.00',
         stock: '0',
-        taxRate: '0.08',
+        taxRate: '0',
         redeemPoints: '0',
       });
       setNewItemStatus('saved');
       await refreshData();
     } catch (error) {
       setNewItemStatus('error');
-      setNewItemError(error instanceof Error ? error.message : 'Could not create item');
+      setNewItemError(errorMessage(error, 'Could not create item'));
     }
   };
 
   const createNewService = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    markAttempted('service');
+    if (hasErrors(validateService(newService))) {
+      setNewServiceStatus('error');
+      setNewServiceError(FIX_FIELDS_MESSAGE);
+      return;
+    }
     setNewServiceStatus('saving');
     setNewServiceError('');
 
@@ -1031,6 +1138,7 @@ function App() {
         price: Number(newService.price),
         redeemPoints: Number(newService.redeemPoints) || 0,
       });
+      resetAttempted('service');
       setNewService({
         code: '',
         name: '',
@@ -1042,7 +1150,7 @@ function App() {
       await refreshData();
     } catch (error) {
       setNewServiceStatus('error');
-      setNewServiceError(error instanceof Error ? error.message : 'Could not create service');
+      setNewServiceError(errorMessage(error, 'Could not create service'));
     }
   };
 
@@ -1050,6 +1158,13 @@ function App() {
     event.preventDefault();
     setSettingsStatus('saving');
     setSettingsError('');
+
+    markAttempted('salon');
+    if (hasErrors(validateSalonInfo(salonForm))) {
+      setSettingsStatus('error');
+      setSettingsError(FIX_FIELDS_MESSAGE);
+      return;
+    }
 
     try {
       const next = await window.pos.updateSalonInfo(salonForm);
@@ -1065,7 +1180,7 @@ function App() {
       setSettingsStatus('saved');
     } catch (error) {
       setSettingsStatus('error');
-      setSettingsError(error instanceof Error ? error.message : 'Could not save salon information');
+      setSettingsError(errorMessage(error, 'Could not save salon information'));
     }
   };
 
@@ -1073,6 +1188,13 @@ function App() {
     event.preventDefault();
     setSettingsStatus('saving');
     setSettingsError('');
+
+    markAttempted('loyalty');
+    if (hasErrors(validateLoyaltyRules(loyaltyForm))) {
+      setSettingsStatus('error');
+      setSettingsError(FIX_FIELDS_MESSAGE);
+      return;
+    }
 
     try {
       const next = await window.pos.updateLoyaltyRules({
@@ -1094,7 +1216,7 @@ function App() {
       setSettingsStatus('saved');
     } catch (error) {
       setSettingsStatus('error');
-      setSettingsError(error instanceof Error ? error.message : 'Could not save loyalty rules');
+      setSettingsError(errorMessage(error, 'Could not save loyalty rules'));
     }
   };
 
@@ -1108,13 +1230,13 @@ function App() {
       setBackupMessage(result.saved && result.path ? `Backup saved to ${result.path}` : 'Backup was canceled.');
     } catch (error) {
       setBackupStatus('error');
-      setBackupMessage(error instanceof Error ? error.message : 'Could not back up the database');
+      setBackupMessage(errorMessage(error, 'Could not back up the database'));
     }
   };
 
   const restoreDatabase = async () => {
     const confirmed = window.confirm(
-      'Restore database from a backup file? This will replace the current local database.'
+      'Restore database from a backup file? This will replace all current data.'
     );
     if (!confirmed) return;
 
@@ -1142,12 +1264,18 @@ function App() {
       await refreshData();
     } catch (error) {
       setRestoreStatus('error');
-      setRestoreMessage(error instanceof Error ? error.message : 'Could not restore the database');
+      setRestoreMessage(errorMessage(error, 'Could not restore the database'));
     }
   };
 
   const createNewCustomer = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    markAttempted('newCustomer');
+    if (hasErrors(validateCustomer(newCustomer))) {
+      setNewCustomerStatus('error');
+      setNewCustomerError(FIX_FIELDS_MESSAGE);
+      return;
+    }
     setNewCustomerStatus('saving');
     setNewCustomerError('');
 
@@ -1159,12 +1287,13 @@ function App() {
         notes: newCustomer.notes || undefined,
       });
       setNewCustomer({ name: '', phone: '', email: '', notes: '' });
+      resetAttempted('newCustomer');
       setNewCustomerStatus('saved');
       setCustomerModal(null);
       await refreshData();
     } catch (error) {
       setNewCustomerStatus('error');
-      setNewCustomerError(error instanceof Error ? error.message : 'Could not create customer');
+      setNewCustomerError(errorMessage(error, 'Could not create customer'));
     }
   };
 
@@ -1205,7 +1334,7 @@ function App() {
       await refreshData();
     } catch (error) {
       setNewVisitStatus('error');
-      setNewVisitError(error instanceof Error ? error.message : 'Could not create visit');
+      setNewVisitError(errorMessage(error, 'Could not create visit'));
     }
   };
 
@@ -1214,6 +1343,9 @@ function App() {
   };
 
   const openAddCustomerModal = () => {
+    resetAttempted('newCustomer');
+    setNewCustomerStatus('idle');
+    setNewCustomerError('');
     setCustomerForm({
       name: '',
       phone: '',
@@ -1285,6 +1417,7 @@ function App() {
       notes: customerProfile.customer.notes ?? '',
     });
     setCustomerFormMode('edit');
+    resetAttempted('customerForm');
     setCustomerFormStatus('idle');
     setCustomerFormError('');
     setCustomerModal('edit');
@@ -1342,7 +1475,7 @@ function App() {
       );
     } catch (error) {
       setBillStatus('error');
-      setBillError(error instanceof Error ? error.message : 'Could not create bill');
+      setBillError(errorMessage(error, 'Could not create bill'));
     }
   };
 
@@ -1366,6 +1499,12 @@ function App() {
 
   const saveCustomer = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    markAttempted('customerForm');
+    if (hasErrors(validateCustomer(customerForm))) {
+      setCustomerFormStatus('error');
+      setCustomerFormError(FIX_FIELDS_MESSAGE);
+      return;
+    }
     setCustomerFormStatus('saving');
     setCustomerFormError('');
 
@@ -1397,12 +1536,13 @@ function App() {
       }
 
       setCustomerFormStatus('saved');
+      resetAttempted('customerForm');
       setCustomerDirectoryRefreshToken((current) => current + 1);
       setCustomerModal(null);
       await refreshData();
     } catch (error) {
       setCustomerFormStatus('error');
-      setCustomerFormError(error instanceof Error ? error.message : 'Could not save customer');
+      setCustomerFormError(errorMessage(error, 'Could not save customer'));
     }
   };
 
@@ -1440,7 +1580,7 @@ function App() {
       await refreshData();
     } catch (error) {
       setRedeemStatus('error');
-      alert(error instanceof Error ? error.message : 'Could not redeem points');
+      alert(errorMessage(error, 'Could not redeem points'));
     }
   };
 
@@ -1460,7 +1600,7 @@ function App() {
       await refreshData();
     } catch (error) {
       setCustomerFormStatus('error');
-      setCustomerFormError(error instanceof Error ? error.message : 'Could not delete customer');
+      setCustomerFormError(errorMessage(error, 'Could not delete customer'));
     }
   };
 
@@ -1468,9 +1608,12 @@ function App() {
     <div className="shell">
       <aside className="sidebar" aria-label="Main navigation">
         <div className="sidebar-brand">
-          <div className="brand-mark">OP</div>
+          <div className="brand-mark" aria-hidden="true">
+            {salonInitials}
+          </div>
           <div className="sidebar-brand-copy">
-            <p className="eyebrow">{settings?.salonInfo.name ?? 'Offline POS'}</p>
+            <strong title={salonName}>{salonName}</strong>
+            <span>Point of Sale</span>
           </div>
         </div>
 
@@ -1487,70 +1630,40 @@ function App() {
               <span className="sidebar-nav-icon" aria-hidden="true">
                 {item.icon}
               </span>
+              <span className="sidebar-nav-label">{item.label}</span>
             </button>
           ))}
         </nav>
+
+        <div className="sidebar-footer">Offline · data saved on this PC</div>
       </aside>
 
       <main className="main">
         <header className="topbar">
           <div>
-            <p className="eyebrow">
-              {view === 'dashboard'
-                ? 'Front desk'
-                : view === 'customers'
-                  ? 'Reception'
-                  : view === 'reports'
-                    ? 'Reporting'
-                    : view === 'checkout'
-                      ? 'Checkout desk'
-                  : view === 'services'
-                    ? 'Treatment catalog'
-                  : view === 'settings'
-                    ? 'Administration'
-                  : 'Cashier station'}
-            </p>
-            <h2>
-              {view === 'dashboard'
-                ? 'Parlor dashboard for customers, visits, and loyalty.'
-                : view === 'customers'
-                  ? 'Manage customer profiles, history, and favorite services.'
-                : view === 'reports'
-                    ? 'Review revenue, visit, customer, and loyalty performance.'
-                  : view === 'checkout'
-                    ? 'Generate invoices, save transactions, and print receipts.'
-                  : view === 'services'
-                    ? 'Create treatment packages with codes, descriptions, and pricing.'
-                  : view === 'settings'
-                    ? 'Configure the salon profile, loyalty rules, and database maintenance.'
-                  : 'Fast checkout, built to feel calm and premium.'}
-            </h2>
+            <h1>{pageHeader.title}</h1>
+            <p>{pageHeader.description}</p>
           </div>
+          {view === 'dashboard' ? (
+            <div className="dashboard-hero-actions">
+              <button
+                className="ghost-button"
+                onClick={() => {
+                  setView('customers');
+                  openAddCustomerModal();
+                }}
+              >
+                Add customer
+              </button>
+              <button className="primary-button topbar-primary" onClick={() => setView('checkout')}>
+                New sale
+              </button>
+            </div>
+          ) : null}
         </header>
 
         {view === 'dashboard' ? (
           <section className="dashboard-view">
-            <div className="dashboard-hero">
-              <div>
-                <p className="eyebrow">Dashboard</p>
-                <h3>Everything the front desk needs in one glance.</h3>
-                <p className="muted">
-                  Track customers, today's visits, revenue, and loyalty points while keeping quick actions close by.
-                </p>
-              </div>
-                <div className="dashboard-hero-actions">
-                <button className="ghost-button" onClick={() => setView('checkout')}>
-                  New Transaction
-                </button>
-                <button className="ghost-button" onClick={() => setView('services')}>
-                  Services
-                </button>
-                <button className="ghost-button" onClick={() => setView('reports')}>
-                  Reports
-                </button>
-              </div>
-            </div>
-
             <div className="dashboard-metrics">
               <div className="metric-card">
                 <span>Total customers</span>
@@ -1563,7 +1676,7 @@ function App() {
                 <small>Customer visits logged today</small>
               </div>
               <div className="metric-card">
-                <span>Revenue summary</span>
+                <span>Revenue today</span>
                 <strong>{dashboard ? money.format(dashboard.revenueToday) : '...'}</strong>
                 <small>{dashboard ? `${money.format(dashboard.monthlyRevenue)} this month` : 'Monthly revenue'}</small>
               </div>
@@ -1578,10 +1691,8 @@ function App() {
               <section className="panel dashboard-panel">
                 <div className="dashboard-panel-head">
                   <div>
-                    <p className="eyebrow">Quick actions</p>
-                    <h2>Customer center</h2>
+                    <h2>Quick actions</h2>
                   </div>
-                  <span className="pill pill-offline">Local first</span>
                 </div>
 
                 <div className="quick-actions-grid">
@@ -1593,16 +1704,16 @@ function App() {
                       openAddCustomerModal();
                     }}
                   >
-                    <h3>Add Customer</h3>
-                    <span>Open a popup for customer details.</span>
+                    <h3>Add customer</h3>
+                    <span>Register a new client profile.</span>
                   </button>
                   <button
                     className="mini-form mini-action-button"
                     type="button"
                     onClick={() => setView('checkout')}
                   >
-                    <h3>New Transaction</h3>
-                    <span>Open the unified checkout screen.</span>
+                    <h3>New sale</h3>
+                    <span>Start a bill for services and products.</span>
                   </button>
                 </div>
               </section>
@@ -1610,8 +1721,7 @@ function App() {
               <section className="panel dashboard-panel">
                 <div className="dashboard-panel-head">
                   <div>
-                    <p className="eyebrow">Recent visits</p>
-                    <h2>Transaction history</h2>
+                    <h2>Recent visits</h2>
                   </div>
                   <span className="pill pill-online">{dashboard?.recentVisits.length ?? 0} logged</span>
                 </div>
@@ -1646,8 +1756,7 @@ function App() {
               <aside className="panel customer-directory">
                 <div className="customer-directory-head">
                   <div>
-                    <p className="eyebrow">Customer management</p>
-                    <h2>Search by name or phone</h2>
+                    <h2>Customer directory</h2>
                   </div>
                   <button className="ghost-button ghost-button-small" onClick={openAddCustomerModal}>
                     New customer
@@ -1782,8 +1891,7 @@ function App() {
             <div className="panel checkout-form-panel">
               <div className="dashboard-panel-head">
                 <div>
-                  <p className="eyebrow">New sale</p>
-                  <h2>Build the bill</h2>
+                  <h2>New sale</h2>
                 </div>
                 {cart.length > 0 ? (
                   <button className="ghost-button ghost-button-small" onClick={clearCheckout}>
@@ -1897,11 +2005,11 @@ function App() {
             <aside className="cart checkout-cart">
               <div className="cart-header">
                 <div>
-                  <p className="eyebrow">Checkout basket</p>
-                  <h3>{cart.length} items</h3>
+                  <h3>Bill</h3>
+                  <span className="muted">{cart.length} {cart.length === 1 ? 'item' : 'items'}</span>
                 </div>
                 <div className="cart-header-actions">
-                  <span className={checkoutStatus === 'saved' ? 'pill pill-online' : 'pill'}>{checkoutStatus}</span>
+                  {checkoutStatus === 'saved' ? <span className="pill pill-online">Sale saved</span> : null}
                 </div>
               </div>
 
@@ -1909,7 +2017,7 @@ function App() {
                 {cart.length === 0 ? (
                   <div className="empty">
                     <strong>No items yet</strong>
-                    <span>Scan a barcode, tap a product, or add a service to begin.</span>
+                    <span>Choose a customer, then add services or products. You can also scan a barcode.</span>
                   </div>
                 ) : (
                   cart.map((item) => (
@@ -1980,7 +2088,9 @@ function App() {
                       </button>
                     </div>
                     <input
-                      className="field"
+                      className={fieldClass(discountError)}
+                      aria-invalid={Boolean(discountError)}
+                      aria-label="Discount"
                       type="number"
                       min="0"
                       step={checkoutDiscountType === 'percent' ? '1' : '0.01'}
@@ -1990,6 +2100,7 @@ function App() {
                     />
                   </div>
                 </div>
+                <FieldHint message={discountError} />
                 {checkoutDiscountType === 'percent' && discount > 0 ? (
                   <div className="discount-applied">
                     <span>Discount applied</span>
@@ -2024,21 +2135,26 @@ function App() {
               {cart.length > 0 && !selectedCheckoutCustomer ? (
                 <p className="muted checkout-require-note">Select a customer above to complete the sale.</p>
               ) : null}
+              {checkoutStatus === 'error' && checkoutError ? (
+                <p className="error-text checkout-error" role="alert">
+                  Sale not completed: {checkoutError}
+                </p>
+              ) : null}
               <button
                 className="primary-button"
                 onClick={submitCheckout}
-                disabled={cart.length === 0 || !selectedCheckoutCustomer}
+                disabled={cart.length === 0 || !selectedCheckoutCustomer || checkoutStatus === 'saving' || Boolean(discountError)}
               >
-                Complete &amp; view receipt
+                {checkoutStatus === 'saving' ? 'Completing sale…' : <>Complete &amp; view receipt</>}
               </button>
 
               <div className="inventory-section inventory-section-muted">
                 <div className="inventory-section-head">
                   <div>
                     <h3>Recent transactions</h3>
-                    <span className="muted">Latest receipts from the unified table</span>
+                    <span className="muted">Latest receipts</span>
                   </div>
-                  <span className="muted">{recentSales.length} stored</span>
+                  <span className="muted">{recentSales.length} shown</span>
                 </div>
                 <div className="customer-history-list">
                   {recentSales.length > 0 ? (
@@ -2066,11 +2182,8 @@ function App() {
         ) : view === 'reports' ? (
           <section className="reports-view">
             <div className="reports-header">
-              <div>
-                <p className="eyebrow">Reports</p>
-                <h2>Business performance at a glance</h2>
-              </div>
-              <span className="pill pill-online">Top method · {reports?.revenue.topPaymentMethod ?? 'Cash'}</span>
+              <span className="muted">All-time figures</span>
+              <span className="pill pill-online">Most used payment: {reports?.revenue.topPaymentMethod ?? 'Cash'}</span>
             </div>
 
             <div className="dashboard-metrics">
@@ -2100,8 +2213,7 @@ function App() {
               <section className="panel dashboard-panel report-panel">
                 <div className="dashboard-panel-head">
                   <div>
-                    <p className="eyebrow">Revenue</p>
-                    <h2>Sales &amp; billing</h2>
+                    <h2>Revenue</h2>
                   </div>
                 </div>
                 <div className="report-stats">
@@ -2140,8 +2252,7 @@ function App() {
               <section className="panel dashboard-panel report-panel">
                 <div className="dashboard-panel-head">
                   <div>
-                    <p className="eyebrow">Customers</p>
-                    <h2>Customer activity</h2>
+                    <h2>Customers</h2>
                   </div>
                 </div>
                 <div className="report-stats">
@@ -2184,8 +2295,7 @@ function App() {
               <section className="panel dashboard-panel report-panel">
                 <div className="dashboard-panel-head">
                   <div>
-                    <p className="eyebrow">Visits</p>
-                    <h2>Services &amp; attendance</h2>
+                    <h2>Visits &amp; services</h2>
                   </div>
                 </div>
                 <div className="report-stats">
@@ -2195,7 +2305,7 @@ function App() {
                   </div>
                   <div className="report-stat">
                     <span>From checkout</span>
-                    <strong>{reports?.visits.saleVisits ?? 0}</strong>
+                    <strong>{reports?.visits.checkoutVisits ?? 0}</strong>
                   </div>
                   <div className="report-stat">
                     <span>Today</span>
@@ -2224,8 +2334,7 @@ function App() {
               <section className="panel dashboard-panel report-panel">
                 <div className="dashboard-panel-head">
                   <div>
-                    <p className="eyebrow">Loyalty</p>
-                    <h2>Points movement</h2>
+                    <h2>Loyalty points</h2>
                   </div>
                 </div>
                 <div className="report-stats">
@@ -2269,99 +2378,118 @@ function App() {
             <div className="panel">
               <div className="inventory-head">
                 <div>
-                  <p className="eyebrow">Treatment catalog</p>
-                  <h2>Service / package management</h2>
+                  <h2>Service list</h2>
+                  <span className="muted">{activeServices.length} active</span>
                 </div>
-                <span className="pill pill-offline">{activeServices.length} active services</span>
+                <button
+                  className={showServiceForm ? 'ghost-button' : 'primary-button topbar-primary'}
+                  type="button"
+                  onClick={() => {
+                    setShowServiceForm((current) => !current);
+                    resetAttempted('service');
+                    setNewServiceError('');
+                  }}
+                >
+                  {showServiceForm ? 'Close form' : 'Add service'}
+                </button>
               </div>
 
-              <form className="new-item-form" onSubmit={createNewService}>
-                <div className="form-head">
-                  <div>
-                    <p className="eyebrow">Add service</p>
-                    <h3>New package</h3>
+              {showServiceForm ? (
+                <form className="new-item-form" onSubmit={createNewService} noValidate>
+                  <div className="form-head">
+                    <div>
+                      <h3>Add a service</h3>
+                    </div>
+                    {newServiceStatus === 'saved' ? <span className="pill pill-online">Saved</span> : null}
                   </div>
-                  <span className={`pill ${newServiceStatus === 'saved' ? 'pill-online' : 'pill-offline'}`}>
-                    {newServiceStatus === 'saved' ? 'Saved' : 'Local only'}
-                  </span>
-                </div>
 
-                <div className="form-grid">
-                  <label>
-                    <span>Code</span>
-                    <input
-                      className="field"
-                      value={newService.code}
-                      onChange={(event) => setNewService((current) => ({ ...current, code: event.target.value }))}
-                      placeholder="FAC-1001"
-                      required
-                    />
-                  </label>
-                  <label>
-                    <span>Name</span>
-                    <input
-                      className="field"
-                      value={newService.name}
-                      onChange={(event) => setNewService((current) => ({ ...current, name: event.target.value }))}
-                      placeholder="Deep Cleansing Facial"
-                      required
-                    />
-                  </label>
-                  <label className="full-width">
-                    <span>Description</span>
-                    <input
-                      className="field"
-                      value={newService.description}
-                      onChange={(event) =>
-                        setNewService((current) => ({ ...current, description: event.target.value }))
-                      }
-                      placeholder="Hydrating facial treatment with a full cleanse and mask"
-                      required
-                    />
-                  </label>
-                  <label>
-                    <span>Price</span>
-                    <input
-                      className="field"
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={newService.price}
-                      onChange={(event) => setNewService((current) => ({ ...current, price: event.target.value }))}
-                      required
-                    />
-                  </label>
-                  <label>
-                    <span>Redeem for free at (points)</span>
-                    <input
-                      className="field"
-                      type="number"
-                      min="0"
-                      step="1"
-                      value={newService.redeemPoints}
-                      onChange={(event) =>
-                        setNewService((current) => ({ ...current, redeemPoints: event.target.value }))
-                      }
-                      placeholder="0 = not redeemable"
-                    />
-                  </label>
-                </div>
-
-                <div className="form-footer">
-                  <button className="primary-button" type="submit" disabled={newServiceStatus === 'saving'}>
-                    {newServiceStatus === 'saving' ? 'Saving...' : 'Add service'}
-                  </button>
-                  <div className="form-message">
-                    {newServiceError ? (
-                      <span className="error-text">{newServiceError}</span>
-                    ) : newServiceStatus === 'saved' ? (
-                      <span className="success-text">Service added to the catalog.</span>
-                    ) : (
-                      <span className="muted">These services can be selected from the visit form.</span>
-                    )}
+                  <div className="form-grid">
+                    <label>
+                      <span>Code</span>
+                      <input
+                        className={fieldClass(serviceErrors.code)}
+                        aria-invalid={Boolean(serviceErrors.code)}
+                        value={newService.code}
+                        onChange={(event) => setNewService((current) => ({ ...current, code: event.target.value }))}
+                        placeholder="FAC-1001"
+                        required
+                      />
+                      <FieldHint message={serviceErrors.code} />
+                    </label>
+                    <label>
+                      <span>Name</span>
+                      <input
+                        className={fieldClass(serviceErrors.name)}
+                        aria-invalid={Boolean(serviceErrors.name)}
+                        value={newService.name}
+                        onChange={(event) => setNewService((current) => ({ ...current, name: event.target.value }))}
+                        placeholder="Deep Cleansing Facial"
+                        required
+                      />
+                      <FieldHint message={serviceErrors.name} />
+                    </label>
+                    <label className="full-width">
+                      <span>Description</span>
+                      <input
+                        className={fieldClass(serviceErrors.description)}
+                        aria-invalid={Boolean(serviceErrors.description)}
+                        value={newService.description}
+                        onChange={(event) =>
+                          setNewService((current) => ({ ...current, description: event.target.value }))
+                        }
+                        placeholder="Hydrating facial treatment with a full cleanse and mask"
+                        required
+                      />
+                      <FieldHint message={serviceErrors.description} />
+                    </label>
+                    <label>
+                      <span>Price</span>
+                      <input
+                        className={fieldClass(serviceErrors.price)}
+                        aria-invalid={Boolean(serviceErrors.price)}
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={newService.price}
+                        onChange={(event) => setNewService((current) => ({ ...current, price: event.target.value }))}
+                        required
+                      />
+                      <FieldHint message={serviceErrors.price} />
+                    </label>
+                    <label>
+                      <span>Redeem for free at (points)</span>
+                      <input
+                        className={fieldClass(serviceErrors.redeemPoints)}
+                        aria-invalid={Boolean(serviceErrors.redeemPoints)}
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={newService.redeemPoints}
+                        onChange={(event) =>
+                          setNewService((current) => ({ ...current, redeemPoints: event.target.value }))
+                        }
+                        placeholder="0 = not redeemable"
+                      />
+                      <FieldHint message={serviceErrors.redeemPoints} />
+                    </label>
                   </div>
-                </div>
-              </form>
+
+                  <div className="form-footer">
+                    <button className="primary-button" type="submit" disabled={newServiceStatus === 'saving'}>
+                      {newServiceStatus === 'saving' ? 'Saving...' : 'Add service'}
+                    </button>
+                    <div className="form-message">
+                      {newServiceError ? (
+                        <span className="error-text">{newServiceError}</span>
+                      ) : newServiceStatus === 'saved' ? (
+                        <span className="success-text">Service added to the catalog.</span>
+                      ) : (
+                        <span className="muted">Services appear in Checkout straight away.</span>
+                      )}
+                    </div>
+                  </div>
+                </form>
+              ) : null}
 
               <div className="inventory-section">
                 <div className="inventory-section-head">
@@ -2500,86 +2628,76 @@ function App() {
           </section>
         ) : view === 'settings' ? (
           <section className="dashboard-view">
-            <div className="dashboard-hero">
-              <div>
-                <p className="eyebrow">Settings</p>
-                <h3>Keep the salon profile and loyalty rules in sync.</h3>
-                <p className="muted">
-                  Update the business details shown on receipts, tune point earning and redemption, and maintain local backups.
-                </p>
-              </div>
-              <div className="dashboard-hero-actions">
-                <button className="ghost-button" onClick={() => void backupDatabase()} disabled={backupStatus === 'saving'}>
-                  {backupStatus === 'saving' ? 'Backing up...' : 'Backup to Excel'}
-                </button>
-                <button className="ghost-button" onClick={() => void restoreDatabase()} disabled={restoreStatus === 'saving'}>
-                  {restoreStatus === 'saving' ? 'Restoring...' : 'Restore from Excel'}
-                </button>
-              </div>
-            </div>
-
             <div className="dashboard-grid">
               <section className="panel dashboard-panel">
                 <div className="dashboard-panel-head">
                   <div>
-                    <p className="eyebrow">Salon information</p>
-                    <h2>Receipt and brand details</h2>
+                    <h2>Salon details</h2>
+                    <span className="muted">Shown in the app and on printed receipts.</span>
                   </div>
-                  <span className={`pill ${settingsStatus === 'saved' ? 'pill-online' : 'pill-offline'}`}>
-                    {settingsStatus === 'saved' ? 'Saved' : 'Local only'}
-                  </span>
+                  {settingsStatus === 'saved' ? <span className="pill pill-online">Saved</span> : null}
                 </div>
 
-                <form className="new-item-form" onSubmit={saveSalonSettings}>
+                <form className="new-item-form" onSubmit={saveSalonSettings} noValidate>
                   <div className="form-grid">
                     <label>
                       <span>Salon name</span>
                       <input
-                        className="field"
+                        className={fieldClass(salonErrors.name)}
+                        aria-invalid={Boolean(salonErrors.name)}
                         value={salonForm.name}
                         onChange={(event) => setSalonForm((current) => ({ ...current, name: event.target.value }))}
                         placeholder="Luxe Salon"
                         required
                       />
+                      <FieldHint message={salonErrors.name} />
                     </label>
                     <label>
                       <span>Tagline</span>
                       <input
-                        className="field"
+                        className={fieldClass(salonErrors.tagline)}
+                        aria-invalid={Boolean(salonErrors.tagline)}
                         value={salonForm.tagline}
                         onChange={(event) => setSalonForm((current) => ({ ...current, tagline: event.target.value }))}
                         placeholder="Front Counter"
                         required
                       />
+                      <FieldHint message={salonErrors.tagline} />
                     </label>
                     <label>
                       <span>Phone</span>
                       <input
-                        className="field"
+                        className={fieldClass(salonErrors.phone)}
+                        aria-invalid={Boolean(salonErrors.phone)}
                         value={salonForm.phone}
                         onChange={(event) => setSalonForm((current) => ({ ...current, phone: event.target.value }))}
                         placeholder="0300-1234567"
                         required
                       />
+                      <FieldHint message={salonErrors.phone} />
                     </label>
                     <label>
                       <span>Email</span>
                       <input
-                        className="field"
+                        className={fieldClass(salonErrors.email)}
+                        aria-invalid={Boolean(salonErrors.email)}
                         value={salonForm.email}
                         onChange={(event) => setSalonForm((current) => ({ ...current, email: event.target.value }))}
                         placeholder="hello@salon.com"
                       />
+                      <FieldHint message={salonErrors.email} />
                     </label>
                     <label className="full-width">
                       <span>Address</span>
                       <input
-                        className="field"
+                        className={fieldClass(salonErrors.address)}
+                        aria-invalid={Boolean(salonErrors.address)}
                         value={salonForm.address}
                         onChange={(event) => setSalonForm((current) => ({ ...current, address: event.target.value }))}
                         placeholder="Shop 12, Main Boulevard"
                         required
                       />
+                      <FieldHint message={salonErrors.address} />
                     </label>
                   </div>
 
@@ -2603,20 +2721,18 @@ function App() {
               <section className="panel dashboard-panel">
                 <div className="dashboard-panel-head">
                   <div>
-                    <p className="eyebrow">Loyalty rules</p>
-                    <h2>Points configuration</h2>
+                    <h2>Loyalty rules</h2>
                   </div>
-                  <span className={`pill ${settingsStatus === 'saved' ? 'pill-online' : 'pill-offline'}`}>
-                    {settingsStatus === 'saved' ? 'Saved' : 'Local only'}
-                  </span>
+                  {settingsStatus === 'saved' ? <span className="pill pill-online">Saved</span> : null}
                 </div>
 
-                <form className="new-item-form" onSubmit={saveLoyaltySettings}>
+                <form className="new-item-form" onSubmit={saveLoyaltySettings} noValidate>
                   <div className="form-grid">
                     <label>
                       <span>Rupees per point (earning)</span>
                       <input
-                        className="field"
+                        className={fieldClass(loyaltyErrors.currencyPerPoint)}
+                        aria-invalid={Boolean(loyaltyErrors.currencyPerPoint)}
                         type="number"
                         min="1"
                         step="1"
@@ -2626,11 +2742,13 @@ function App() {
                         }
                         required
                       />
+                      <FieldHint message={loyaltyErrors.currencyPerPoint} />
                     </label>
                     <label>
                       <span>Minimum redeem points</span>
                       <input
-                        className="field"
+                        className={fieldClass(loyaltyErrors.minimumRedeemPoints)}
+                        aria-invalid={Boolean(loyaltyErrors.minimumRedeemPoints)}
                         type="number"
                         min="0"
                         step="1"
@@ -2640,6 +2758,7 @@ function App() {
                         }
                         required
                       />
+                      <FieldHint message={loyaltyErrors.minimumRedeemPoints} />
                     </label>
                   </div>
 
@@ -2661,8 +2780,7 @@ function App() {
               <section className="panel dashboard-panel">
                 <div className="dashboard-panel-head">
                   <div>
-                    <p className="eyebrow">Database maintenance</p>
-                    <h2>Backup and restore</h2>
+                    <h2>Backup &amp; restore</h2>
                   </div>
                 </div>
                 <div className="list">
@@ -2699,137 +2817,162 @@ function App() {
             <div className="panel">
               <div className="inventory-head">
                 <div>
-                  <p className="eyebrow">Stock room</p>
-                  <h2>Inventory control</h2>
+                  <h2>Products</h2>
+                  <span className="muted">{activeInventory.length} active</span>
                 </div>
-                <span className="pill pill-offline">{activeInventory.length} active items</span>
+                <button
+                  className={showProductForm ? 'ghost-button' : 'primary-button topbar-primary'}
+                  type="button"
+                  onClick={() => {
+                    setShowProductForm((current) => !current);
+                    resetAttempted('product');
+                    setNewItemError('');
+                  }}
+                >
+                  {showProductForm ? 'Close form' : 'Add product'}
+                </button>
               </div>
 
-              <form className="new-item-form" onSubmit={createNewItem}>
-                <div className="form-head">
-                  <div>
-                    <p className="eyebrow">Add item</p>
-                    <h3>New product</h3>
+              {showProductForm ? (
+                <form className="new-item-form" onSubmit={createNewItem} noValidate>
+                  <div className="form-head">
+                    <div>
+                      <h3>Add a product</h3>
+                    </div>
+                    {newItemStatus === 'saved' ? <span className="pill pill-online">Saved</span> : null}
                   </div>
-                  <span className={`pill ${newItemStatus === 'saved' ? 'pill-online' : 'pill-offline'}`}>
-                    {newItemStatus === 'saved' ? 'Saved' : 'Local only'}
-                  </span>
-                </div>
 
-                <div className="form-grid">
-                  <label>
-                    <span>Product name</span>
-                    <input
-                      className="field"
-                      value={newItem.name}
-                      onChange={(event) => setNewItem((current) => ({ ...current, name: event.target.value }))}
-                      placeholder="Deep Cleansing Facial"
-                      required
-                    />
-                  </label>
-                  <label>
-                    <span>Category</span>
-                    <input
-                      className="field"
-                      value={newItem.category}
-                      onChange={(event) =>
-                        setNewItem((current) => ({ ...current, category: event.target.value }))
-                      }
-                      placeholder="Facials"
-                      required
-                    />
-                  </label>
-                  <label>
-                    <span>SKU</span>
-                    <input
-                      className="field"
-                      value={newItem.sku}
-                      onChange={(event) => setNewItem((current) => ({ ...current, sku: event.target.value }))}
-                      placeholder="FAC-1001"
-                      required
-                    />
-                  </label>
-                  <label>
-                    <span>Barcode</span>
-                    <input
-                      className="field"
-                      value={newItem.barcode}
-                      onChange={(event) =>
-                        setNewItem((current) => ({ ...current, barcode: event.target.value }))
-                      }
-                      placeholder="SRV-1000001"
-                      required
-                    />
-                  </label>
-                  <label>
-                    <span>Price</span>
-                    <input
-                      className="field"
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={newItem.price}
-                      onChange={(event) => setNewItem((current) => ({ ...current, price: event.target.value }))}
-                      required
-                    />
-                  </label>
-                  <label>
-                    <span>Starting stock</span>
-                    <input
-                      className="field"
-                      type="number"
-                      min="0"
-                      step="1"
-                      value={newItem.stock}
-                      onChange={(event) => setNewItem((current) => ({ ...current, stock: event.target.value }))}
-                      required
-                    />
-                  </label>
-                  <label>
-                    <span>Tax rate</span>
-                    <input
-                      className="field"
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={newItem.taxRate}
-                      onChange={(event) =>
-                        setNewItem((current) => ({ ...current, taxRate: event.target.value }))
-                      }
-                      required
-                    />
-                  </label>
-                  <label>
-                    <span>Redeem for free at (points)</span>
-                    <input
-                      className="field"
-                      type="number"
-                      min="0"
-                      step="1"
-                      value={newItem.redeemPoints}
-                      onChange={(event) =>
-                        setNewItem((current) => ({ ...current, redeemPoints: event.target.value }))
-                      }
-                      placeholder="0 = not redeemable"
-                    />
-                  </label>
-                </div>
-
-                <div className="form-footer">
-                  <button className="primary-button" type="submit" disabled={newItemStatus === 'saving'}>
-                    {newItemStatus === 'saving' ? 'Saving...' : 'Add item'}
-                  </button>
-                  <div className="form-message">
-                    {newItemError ? (
-                      <span className="error-text">{newItemError}</span>
-                    ) : newItemStatus === 'saved' ? (
-                      <span className="success-text">Item added to local inventory.</span>
-                    ) : (
-                      <span className="muted">This saves to the local database.</span>
-                    )}
+                  <div className="form-grid">
+                    <label>
+                      <span>Product name</span>
+                      <input
+                        className={fieldClass(productErrors.name)}
+                        aria-invalid={Boolean(productErrors.name)}
+                        value={newItem.name}
+                        onChange={(event) => setNewItem((current) => ({ ...current, name: event.target.value }))}
+                        placeholder="e.g. Argan Oil Shampoo 300ml"
+                        required
+                      />
+                      <FieldHint message={productErrors.name} />
+                    </label>
+                    <label>
+                      <span>Category</span>
+                      <input
+                        className={fieldClass(productErrors.category)}
+                        aria-invalid={Boolean(productErrors.category)}
+                        value={newItem.category}
+                        onChange={(event) =>
+                          setNewItem((current) => ({ ...current, category: event.target.value }))
+                        }
+                        placeholder="e.g. Hair Care"
+                        required
+                      />
+                      <FieldHint message={productErrors.category} />
+                    </label>
+                    <label>
+                      <span>SKU</span>
+                      <input
+                        className={fieldClass(productErrors.sku)}
+                        aria-invalid={Boolean(productErrors.sku)}
+                        value={newItem.sku}
+                        onChange={(event) => setNewItem((current) => ({ ...current, sku: event.target.value }))}
+                        placeholder="e.g. HC-1001"
+                        required
+                      />
+                      <FieldHint message={productErrors.sku} />
+                    </label>
+                    <label>
+                      <span>Barcode</span>
+                      <input
+                        className={fieldClass(productErrors.barcode)}
+                        aria-invalid={Boolean(productErrors.barcode)}
+                        value={newItem.barcode}
+                        onChange={(event) =>
+                          setNewItem((current) => ({ ...current, barcode: event.target.value }))
+                        }
+                        placeholder="Scan or type barcode"
+                        required
+                      />
+                      <FieldHint message={productErrors.barcode} />
+                    </label>
+                    <label>
+                      <span>Price</span>
+                      <input
+                        className={fieldClass(productErrors.price)}
+                        aria-invalid={Boolean(productErrors.price)}
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={newItem.price}
+                        onChange={(event) => setNewItem((current) => ({ ...current, price: event.target.value }))}
+                        required
+                      />
+                      <FieldHint message={productErrors.price} />
+                    </label>
+                    <label>
+                      <span>Starting stock</span>
+                      <input
+                        className={fieldClass(productErrors.stock)}
+                        aria-invalid={Boolean(productErrors.stock)}
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={newItem.stock}
+                        onChange={(event) => setNewItem((current) => ({ ...current, stock: event.target.value }))}
+                        required
+                      />
+                      <FieldHint message={productErrors.stock} />
+                    </label>
+                    <label>
+                      <span>Tax rate (%)</span>
+                      <input
+                        className={fieldClass(productErrors.taxRate)}
+                        aria-invalid={Boolean(productErrors.taxRate)}
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={newItem.taxRate}
+                        onChange={(event) =>
+                          setNewItem((current) => ({ ...current, taxRate: event.target.value }))
+                        }
+                        required
+                      />
+                      <FieldHint message={productErrors.taxRate} />
+                    </label>
+                    <label>
+                      <span>Redeem for free at (points)</span>
+                      <input
+                        className={fieldClass(productErrors.redeemPoints)}
+                        aria-invalid={Boolean(productErrors.redeemPoints)}
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={newItem.redeemPoints}
+                        onChange={(event) =>
+                          setNewItem((current) => ({ ...current, redeemPoints: event.target.value }))
+                        }
+                        placeholder="0 = not redeemable"
+                      />
+                      <FieldHint message={productErrors.redeemPoints} />
+                    </label>
                   </div>
-                </div>
-              </form>
+
+                  <div className="form-footer">
+                    <button className="primary-button" type="submit" disabled={newItemStatus === 'saving'}>
+                      {newItemStatus === 'saving' ? 'Saving...' : 'Add item'}
+                    </button>
+                    <div className="form-message">
+                      {newItemError ? (
+                        <span className="error-text">{newItemError}</span>
+                      ) : newItemStatus === 'saved' ? (
+                        <span className="success-text">Product added.</span>
+                      ) : (
+                        null
+                      )}
+                    </div>
+                  </div>
+                </form>
+              ) : null}
 
               <div className="inventory-section">
                 <div className="inventory-section-head">
@@ -2997,44 +3140,52 @@ function App() {
               </div>
 
               {customerModal === 'customer' ? (
-                <form className="new-item-form" onSubmit={createNewCustomer}>
+                <form className="new-item-form" onSubmit={createNewCustomer} noValidate>
                   <div className="form-grid">
                     <label>
                       <span>Name</span>
                       <input
-                        className="field"
+                        className={fieldClass(newCustomerErrors.name)}
+                        aria-invalid={Boolean(newCustomerErrors.name)}
                         placeholder="Ayesha Khan"
                         value={newCustomer.name}
                         onChange={(event) => setNewCustomer((current) => ({ ...current, name: event.target.value }))}
                         required
                       />
+                      <FieldHint message={newCustomerErrors.name} />
                     </label>
                     <label>
                       <span>Phone</span>
                       <input
-                        className="field"
+                        className={fieldClass(newCustomerErrors.phone)}
+                        aria-invalid={Boolean(newCustomerErrors.phone)}
                         placeholder="0300-1234567"
                         value={newCustomer.phone}
                         onChange={(event) => setNewCustomer((current) => ({ ...current, phone: event.target.value }))}
                       />
+                      <FieldHint message={newCustomerErrors.phone} />
                     </label>
                     <label className="full-width">
                       <span>Email</span>
                       <input
-                        className="field"
+                        className={fieldClass(newCustomerErrors.email)}
+                        aria-invalid={Boolean(newCustomerErrors.email)}
                         placeholder="client@example.com"
                         value={newCustomer.email}
                         onChange={(event) => setNewCustomer((current) => ({ ...current, email: event.target.value }))}
                       />
+                      <FieldHint message={newCustomerErrors.email} />
                     </label>
                     <label className="full-width">
                       <span>Notes</span>
                       <input
-                        className="field"
+                        className={fieldClass(newCustomerErrors.notes)}
+                        aria-invalid={Boolean(newCustomerErrors.notes)}
                         placeholder="Preferred stylist, allergies, reminders"
                         value={newCustomer.notes}
                         onChange={(event) => setNewCustomer((current) => ({ ...current, notes: event.target.value }))}
                       />
+                      <FieldHint message={newCustomerErrors.notes} />
                     </label>
                   </div>
                   <div className="form-footer">
@@ -3299,44 +3450,52 @@ function App() {
                   </div>
                 </form>
               ) : customerModal === 'edit' ? (
-                <form className="new-item-form" onSubmit={saveCustomer}>
+                <form className="new-item-form" onSubmit={saveCustomer} noValidate>
                   <div className="form-grid">
                     <label>
                       <span>Name</span>
                       <input
-                        className="field"
+                        className={fieldClass(customerFormErrors.name)}
+                        aria-invalid={Boolean(customerFormErrors.name)}
                         placeholder="Ayesha Khan"
                         value={customerForm.name}
                         onChange={(event) => setCustomerForm((current) => ({ ...current, name: event.target.value }))}
                         required
                       />
+                      <FieldHint message={customerFormErrors.name} />
                     </label>
                     <label>
                       <span>Phone number</span>
                       <input
-                        className="field"
+                        className={fieldClass(customerFormErrors.phone)}
+                        aria-invalid={Boolean(customerFormErrors.phone)}
                         placeholder="0300-1234567"
                         value={customerForm.phone}
                         onChange={(event) => setCustomerForm((current) => ({ ...current, phone: event.target.value }))}
                       />
+                      <FieldHint message={customerFormErrors.phone} />
                     </label>
                     <label>
                       <span>Email</span>
                       <input
-                        className="field"
+                        className={fieldClass(customerFormErrors.email)}
+                        aria-invalid={Boolean(customerFormErrors.email)}
                         placeholder="client@example.com"
                         value={customerForm.email}
                         onChange={(event) => setCustomerForm((current) => ({ ...current, email: event.target.value }))}
                       />
+                      <FieldHint message={customerFormErrors.email} />
                     </label>
                     <label>
                       <span>Notes</span>
                       <input
-                        className="field"
+                        className={fieldClass(customerFormErrors.notes)}
+                        aria-invalid={Boolean(customerFormErrors.notes)}
                         placeholder="Preferred stylist, allergies, reminders"
                         value={customerForm.notes}
                         onChange={(event) => setCustomerForm((current) => ({ ...current, notes: event.target.value }))}
                       />
+                      <FieldHint message={customerFormErrors.notes} />
                     </label>
                   </div>
                   <div className="form-footer">
@@ -3398,11 +3557,14 @@ function App() {
                 <div className="new-item-form">
                   {(() => {
                     const balance = customerProfile?.customer.loyaltyPoints ?? 0;
-                    // Only services with an explicit redeem price the customer can afford.
+                    const minimumRedeem = settings?.loyaltyRules.minimumRedeemPoints ?? 0;
+                    // Only services with an explicit redeem price the customer can afford and that
+                    // meet the minimum redeem rule (the backend rejects anything below it).
                     const affordable = services.filter(
                       (service) =>
                         service.isActive !== 0 &&
                         service.redeemPoints > 0 &&
+                        service.redeemPoints >= minimumRedeem &&
                         service.redeemPoints <= balance
                     );
                     return (
@@ -3410,7 +3572,7 @@ function App() {
                         <div className="inventory-section-head">
                           <div>
                             <h3>Free services on {balance} points</h3>
-                            <span className="muted">Tap a service to redeem it for this customer</span>
+                            <span className="muted">Select a service to redeem it for this customer</span>
                           </div>
                         </div>
                         <div className="customer-summary-list">
@@ -3434,7 +3596,11 @@ function App() {
                               </button>
                             ))
                           ) : (
-                            <span className="muted">No service can be redeemed with these points yet.</span>
+                            <span className="muted">
+                              {balance < minimumRedeem
+                                ? `At least ${minimumRedeem} points are needed before redeeming.`
+                                : 'No service can be redeemed with these points yet.'}
+                            </span>
                           )}
                         </div>
                       </div>

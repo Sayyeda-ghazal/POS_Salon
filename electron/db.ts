@@ -5,6 +5,33 @@ import path from 'node:path';
 import { app } from 'electron';
 import * as XLSX from 'xlsx';
 import type { Product, SaleSummary, ServicePackage } from './schema';
+import {
+  firstError,
+  hasErrors,
+  normalizePhone,
+  validateCustomer,
+  validateLoyaltyRules,
+  validateProduct,
+  validateSalonInfo,
+  validateService,
+  type FieldErrors,
+} from './validation';
+
+// Throws the first validation message so the renderer can show it as-is.
+function assertValid(errors: FieldErrors) {
+  if (hasErrors(errors)) throw new Error(firstError(errors));
+}
+
+// Blocks two active customers sharing a phone number (the front desk looks clients up by phone).
+function assertPhoneAvailable(db: InstanceType<typeof Database>, phone: string | null, exceptId?: string) {
+  if (!phone) return;
+  const target = normalizePhone(phone);
+  const rows = db
+    .prepare('SELECT id, name, phone FROM customers WHERE isActive = 1 AND phone IS NOT NULL')
+    .all() as Array<{ id: string; name: string; phone: string }>;
+  const clash = rows.find((row) => row.id !== exceptId && normalizePhone(row.phone) === target);
+  if (clash) throw new Error(`Phone number is already used by ${clash.name}`);
+}
 
 type SaleRecord = SaleSummary & {
   id: string;
@@ -177,6 +204,7 @@ export type VisitReport = {
   visitsToday: number;
   manualVisits: number;
   saleVisits: number;
+  checkoutVisits: number;
   topServices: CustomerServiceSummary[];
   recentVisits: VisitRecord[];
 };
@@ -233,11 +261,11 @@ const LOYALTY_RULES_KEY = 'loyalty_rules';
 const PKR_PER_POINT = 15;
 
 const defaultSalonInfo: SalonInfoSettings = {
-  name: 'Front Counter Salon',
-  phone: '0300-0000000',
-  email: 'hello@example.com',
-  address: 'Main Boulevard, Lahore',
-  tagline: 'Calm beauty operations, built for the front desk.',
+  name: 'Your Salon',
+  phone: '',
+  email: '',
+  address: '',
+  tagline: '',
 };
 
 const defaultLoyaltyRules: LoyaltyRulesSettings = {
@@ -495,11 +523,12 @@ export function initDb() {
       VALUES (@id, @sku, @barcode, @name, @category, @price, @stock, @taxRate, @redeemPoints, 1)
     `);
     const rows: Omit<Product, 'isActive'>[] = [
-      { id: crypto.randomUUID(), sku: 'BRD-1001', barcode: '1110001110001', name: 'Sourdough Bread', category: 'Bakery', price: 4.5, stock: 42, taxRate: 0.08, redeemPoints: 0 },
-      { id: crypto.randomUUID(), sku: 'MIL-2001', barcode: '2220002220002', name: 'Whole Milk', category: 'Dairy', price: 3.25, stock: 30, taxRate: 0.08, redeemPoints: 0 },
-      { id: crypto.randomUUID(), sku: 'CF-3001', barcode: '3330003330003', name: 'House Coffee', category: 'Beverages', price: 6.75, stock: 18, taxRate: 0.08, redeemPoints: 0 },
-      { id: crypto.randomUUID(), sku: 'SNK-4001', barcode: '4440004440004', name: 'Trail Mix', category: 'Snacks', price: 5.95, stock: 25, taxRate: 0.08, redeemPoints: 0 },
-      { id: crypto.randomUUID(), sku: 'FR-5001', barcode: '5550005550005', name: 'Bananas', category: 'Produce', price: 2.99, stock: 50, taxRate: 0.08, redeemPoints: 0 },
+      // Salon retail demo stock. Tax is 0 until the salon's tax rule is decided.
+      { id: crypto.randomUUID(), sku: 'HC-1001', barcode: '8961001000011', name: 'Argan Oil Shampoo 300ml', category: 'Hair Care', price: 1850, stock: 24, taxRate: 0, redeemPoints: 0 },
+      { id: crypto.randomUUID(), sku: 'HC-1002', barcode: '8961001000028', name: 'Keratin Repair Hair Mask 200ml', category: 'Hair Care', price: 2400, stock: 15, taxRate: 0, redeemPoints: 0 },
+      { id: crypto.randomUUID(), sku: 'SK-2001', barcode: '8961002000010', name: 'Vitamin C Face Serum 30ml', category: 'Skin Care', price: 3200, stock: 12, taxRate: 0, redeemPoints: 0 },
+      { id: crypto.randomUUID(), sku: 'SK-2002', barcode: '8961002000027', name: 'Hydrating Face Wash 150ml', category: 'Skin Care', price: 1350, stock: 30, taxRate: 0, redeemPoints: 0 },
+      { id: crypto.randomUUID(), sku: 'NL-3001', barcode: '8961003000019', name: 'Gel Nail Polish', category: 'Nails', price: 950, stock: 40, taxRate: 0, redeemPoints: 0 },
     ];
     for (const row of rows) seed.run(row);
   }
@@ -819,6 +848,7 @@ export function getSettings(): AppSettingsSnapshot {
 
 export function updateSalonInfo(payload: Partial<SalonInfoSettings>) {
   const current = getSettings().salonInfo;
+  assertValid(validateSalonInfo({ ...payload, name: payload.name ?? current.name }));
   const next = {
     name: payload.name?.trim() || current.name,
     phone: payload.phone?.trim() || '',
@@ -832,6 +862,12 @@ export function updateSalonInfo(payload: Partial<SalonInfoSettings>) {
 
 export function updateLoyaltyRules(payload: Partial<LoyaltyRulesSettings>) {
   const current = getSettings().loyaltyRules;
+  assertValid(
+    validateLoyaltyRules({
+      currencyPerPoint: payload.currencyPerPoint ?? current.currencyPerPoint,
+      minimumRedeemPoints: payload.minimumRedeemPoints ?? current.minimumRedeemPoints,
+    })
+  );
   const next: LoyaltyRulesSettings = {
     // Must be at least 1 currency unit per point (used as a divisor when earning).
     currencyPerPoint: Number.isFinite(payload.currencyPerPoint)
@@ -938,17 +974,17 @@ export function listProducts(): Product[] {
 export function getStats() {
   const db = getDatabase();
   const revenueToday = db
-    .prepare(`SELECT COALESCE(SUM(grandTotal), 0) as total FROM transactions WHERE date(createdAt) = date('now')`)
+    .prepare(`SELECT COALESCE(SUM(grandTotal), 0) as total FROM transactions WHERE date(createdAt, 'localtime') = date('now', 'localtime')`)
     .get() as { total: number };
   const receiptCount = db
-    .prepare(`SELECT COUNT(*) as count FROM transactions WHERE date(createdAt) = date('now')`)
+    .prepare(`SELECT COUNT(*) as count FROM transactions WHERE date(createdAt, 'localtime') = date('now', 'localtime')`)
     .get() as { count: number };
   const visitsToday = db
     .prepare(
       `SELECT COUNT(DISTINCT t.id) as count
        FROM transactions t
        JOIN transaction_items ti ON ti.transactionId = t.id
-       WHERE ti.itemType = 'service' AND date(t.createdAt) = date('now')`
+       WHERE ti.itemType = 'service' AND date(t.createdAt, 'localtime') = date('now', 'localtime')`
     )
     .get() as { count: number };
   const productCount = db
@@ -964,14 +1000,14 @@ export function getStats() {
     .prepare(
       `SELECT COALESCE(SUM(loyaltyPointsEarned), 0) as total
        FROM transactions
-       WHERE date(createdAt) = date('now')`
+       WHERE date(createdAt, 'localtime') = date('now', 'localtime')`
     )
     .get() as { total: number };
   const monthlyRevenue = db
     .prepare(
       `SELECT COALESCE(SUM(grandTotal), 0) as total
        FROM transactions
-       WHERE strftime('%Y-%m', createdAt) = strftime('%Y-%m', 'now')`
+       WHERE strftime('%Y-%m', createdAt, 'localtime') = strftime('%Y-%m', 'now', 'localtime')`
     )
     .get() as { total: number };
   const pendingSync = db
@@ -1020,6 +1056,12 @@ export function getStats() {
   };
 }
 
+// YYYYMMDD in the machine's local timezone (the salon's), not UTC.
+function localDateStamp(date: Date) {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`;
+}
+
 export function createTransaction(payload: {
   cashierName: string;
   paymentMethod: string;
@@ -1033,9 +1075,11 @@ export function createTransaction(payload: {
   const db = getDatabase();
   const normalizedItems = payload.items.map((item) => {
     const qty = Math.trunc(item.qty ?? 1);
-    if (!Number.isFinite(item.price)) throw new Error('Item price must be valid');
-    if (!Number.isFinite(item.taxRate ?? 0)) throw new Error('Item tax rate must be valid');
-    if (qty <= 0) throw new Error('Quantity must be greater than zero');
+    if (!Number.isFinite(item.price) || item.price < 0) throw new Error('Item price must be valid');
+    const taxRate = item.taxRate ?? 0;
+    if (!Number.isFinite(taxRate) || taxRate < 0 || taxRate > 1) throw new Error('Item tax rate must be valid');
+    if (!Number.isFinite(qty) || qty <= 0) throw new Error('Quantity must be greater than zero');
+    if (qty > 1000) throw new Error('Quantity is too large');
     return {
       type: item.type,
       itemId: item.itemId?.trim() || null,
@@ -1071,6 +1115,14 @@ export function createTransaction(payload: {
   const productById = new Map(loadedProducts.map((product) => [product.id, product]));
   const serviceById = new Map(loadedServices.map((service) => [service.id, service]));
 
+  // The same product may appear on several lines, so check stock against the combined quantity.
+  const requestedQtyByProduct = new Map<string, number>();
+  for (const item of normalizedItems) {
+    if (item.type === 'product' && item.itemId) {
+      requestedQtyByProduct.set(item.itemId, (requestedQtyByProduct.get(item.itemId) ?? 0) + item.qty);
+    }
+  }
+
   const detailedItems: TransactionItemRecord[] = [];
   let subtotal = 0;
   let taxTotal = 0;
@@ -1082,8 +1134,11 @@ export function createTransaction(payload: {
       if (!item.itemId) throw new Error('Product item id is required');
       const product = productById.get(item.itemId);
       if (!product || product.isActive === 0) throw new Error('Product not found');
-      if (item.qty > product.stock) {
-        throw new Error(`Not enough stock for ${product.name}`);
+      const requestedQty = requestedQtyByProduct.get(product.id) ?? item.qty;
+      if (requestedQty > product.stock) {
+        throw new Error(
+          `Not enough stock for ${product.name}: ${requestedQty} requested, only ${Math.max(0, product.stock)} available`
+        );
       }
       const resolvedPrice = item.price > 0 ? item.price : product.price;
       const resolvedTaxRate = item.name ? item.taxRate : product.taxRate;
@@ -1130,11 +1185,13 @@ export function createTransaction(payload: {
   subtotal = money(detailedItems.reduce((sum, item) => sum + item.lineTotal, 0));
   taxTotal = money(detailedItems.reduce((sum, item) => sum + item.lineTotal * item.taxRate, 0));
   const discountTotal = money(payload.discountTotal ?? 0);
+  if (!Number.isFinite(discountTotal) || discountTotal < 0) throw new Error('Discount cannot be negative');
+  if (discountTotal > money(subtotal + taxTotal)) throw new Error('Discount cannot be more than the bill total');
   const grandTotal = money(subtotal + taxTotal - discountTotal);
 
   const transactionId = crypto.randomUUID();
   const transactionCount = db.prepare('SELECT COUNT(*) as count FROM transactions').get() as { count: number };
-  const receiptNo = `T-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${String(
+  const receiptNo = `T-${localDateStamp(new Date())}-${String(
     transactionCount.count + 1
   ).padStart(5, '0')}`;
   const createdAt = new Date().toISOString();
@@ -1361,7 +1418,7 @@ export function getReports(): ReportsSnapshot {
 
   const monthlyTrend = db
     .prepare(
-      `SELECT strftime('%Y-%m', createdAt) as month, COALESCE(SUM(grandTotal), 0) as revenue, COUNT(*) as saleCount
+      `SELECT strftime('%Y-%m', createdAt, 'localtime') as month, COALESCE(SUM(grandTotal), 0) as revenue, COUNT(*) as saleCount
        FROM transactions
        GROUP BY month
        ORDER BY month DESC
@@ -1398,7 +1455,7 @@ export function getReports(): ReportsSnapshot {
       `SELECT
         COUNT(*) as totalCustomers,
         COALESCE(SUM(CASE WHEN isActive = 1 THEN 1 ELSE 0 END), 0) as activeCustomers,
-        COALESCE(SUM(CASE WHEN strftime('%Y-%m', createdAt) = strftime('%Y-%m', 'now') THEN 1 ELSE 0 END), 0) as newCustomersThisMonth,
+        COALESCE(SUM(CASE WHEN strftime('%Y-%m', createdAt, 'localtime') = strftime('%Y-%m', 'now', 'localtime') THEN 1 ELSE 0 END), 0) as newCustomersThisMonth,
         COALESCE(AVG(visitsCount), 0) as averageVisitsPerCustomer
        FROM customers`
     )
@@ -1438,9 +1495,10 @@ export function getReports(): ReportsSnapshot {
     .prepare(
       `SELECT
         COUNT(DISTINCT t.id) as totalVisits,
-        COUNT(DISTINCT CASE WHEN date(t.createdAt) = date('now') THEN t.id END) as visitsToday,
+        COUNT(DISTINCT CASE WHEN date(t.createdAt, 'localtime') = date('now', 'localtime') THEN t.id END) as visitsToday,
         COUNT(DISTINCT CASE WHEN t.originType = 'visit' THEN t.id END) as manualVisits,
-        COUNT(DISTINCT CASE WHEN t.originType = 'sale' THEN t.id END) as saleVisits
+        COUNT(DISTINCT CASE WHEN t.originType = 'sale' THEN t.id END) as saleVisits,
+        COUNT(DISTINCT CASE WHEN COALESCE(t.originType, 'checkout') = 'checkout' THEN t.id END) as checkoutVisits
        FROM transactions t
        JOIN transaction_items ti ON ti.transactionId = t.id
        WHERE ti.itemType = 'service'`
@@ -1450,6 +1508,7 @@ export function getReports(): ReportsSnapshot {
     visitsToday: number;
     manualVisits: number;
     saleVisits: number;
+    checkoutVisits: number;
   };
 
   const topServices = db
@@ -1574,6 +1633,7 @@ export function getReports(): ReportsSnapshot {
       visitsToday: visitSummary.visitsToday,
       manualVisits: visitSummary.manualVisits,
       saleVisits: visitSummary.saleVisits,
+      checkoutVisits: visitSummary.checkoutVisits,
       topServices,
       recentVisits,
     },
@@ -1619,12 +1679,7 @@ export function createProduct(payload: {
   const name = payload.name.trim();
   const category = payload.category.trim();
 
-  if (!sku || !barcode || !name || !category) {
-    throw new Error('SKU, barcode, name, and category are required');
-  }
-  if (payload.price < 0) throw new Error('Price cannot be negative');
-  if (payload.stock < 0) throw new Error('Stock cannot be negative');
-  if (payload.taxRate < 0) throw new Error('Tax rate cannot be negative');
+  assertValid(validateProduct(payload));
 
   const existing = db
     .prepare('SELECT id FROM products WHERE sku = ? OR barcode = ?')
@@ -1677,10 +1732,7 @@ export function createService(payload: {
   const name = payload.name.trim();
   const description = payload.description.trim();
 
-  if (!code || !name || !description) {
-    throw new Error('Code, name, and description are required');
-  }
-  if (payload.price < 0) throw new Error('Price cannot be negative');
+  assertValid(validateService(payload));
   const redeemPoints = Math.max(0, Math.trunc(payload.redeemPoints ?? 0));
 
   const existing = db
@@ -1771,9 +1823,10 @@ export function adjustInventory(payload: {
     | { id: string; name: string; stock: number }
     | undefined;
   if (!product) throw new Error('Product not found');
+  if (!Number.isInteger(payload.delta) || payload.delta === 0) throw new Error('Stock change must be a whole number');
 
   const nextStock = product.stock + payload.delta;
-  if (nextStock < 0) throw new Error('Stock cannot go below zero');
+  if (nextStock < 0) throw new Error(`Stock cannot go below zero (${product.name} has ${product.stock})`);
 
   const tx = db.transaction(() => {
     db.prepare('UPDATE products SET stock = ? WHERE id = ?').run(nextStock, payload.productId);
@@ -1845,13 +1898,14 @@ export function createCustomer(payload: { name: string; phone?: string; email?: 
   const email = payload.email?.trim() || null;
   const notes = payload.notes?.trim() || null;
 
-  if (!name) throw new Error('Customer name is required');
+  assertValid(validateCustomer(payload));
+  assertPhoneAvailable(db, phone);
 
   const id = crypto.randomUUID();
   const createdAt = new Date().toISOString();
 
   db.prepare(`
-    INSERT INTO customers (id, name, phone, email, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive)
+    INSERT INTO customers (id, name, phone, email, notes, loyaltyPoints, visitsCount, lastVisitAt, createdAt, isActive)
     VALUES (?, ?, ?, ?, ?, 0, 0, NULL, ?, 1)
   `).run(id, name, phone, email, notes, createdAt);
 
@@ -1900,7 +1954,8 @@ export function updateCustomer(payload: { id: string; name: string; phone?: stri
   const notes = payload.notes?.trim() || null;
 
   if (!id) throw new Error('Customer id is required');
-  if (!name) throw new Error('Customer name is required');
+  assertValid(validateCustomer(payload));
+  assertPhoneAvailable(db, phone, id);
 
   const customer = db
     .prepare(

@@ -48,7 +48,7 @@ function createWindow() {
     height: 950,
     minWidth: 1280,
     minHeight: 820,
-    backgroundColor: '#07111f',
+    backgroundColor: '#f4f3f6',
     titleBarStyle: 'hiddenInset',
     webPreferences: {
       preload: path.join(app.getAppPath(), 'dist-electron/preload.js'),
@@ -64,6 +64,13 @@ function createWindow() {
     win.loadFile(path.join(app.getAppPath(), 'dist', 'index.html'));
   }
 }
+
+const escapeHtml = (value: unknown) =>
+  String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
 
 function buildReceiptHtml(payload: {
   receiptNo: string;
@@ -95,7 +102,7 @@ function buildReceiptHtml(payload: {
     .map(
       (item) => `
       <tr>
-        <td>${item.name ?? item.productName ?? 'Item'}<br><span>${item.quantity} x ${money.format(item.unitPrice)}</span></td>
+        <td>${escapeHtml(item.name ?? item.productName ?? 'Item')}<br><span>${item.quantity} x ${money.format(item.unitPrice)}</span></td>
         <td style="text-align:right">${money.format(item.lineTotal)}</td>
       </tr>`
     )
@@ -107,14 +114,20 @@ function buildReceiptHtml(payload: {
       <head>
         <meta charset="utf-8" />
         <style>
+          /* 80mm thermal roll: ~72mm printable width, page height grows with content. */
+          @page { size: 80mm auto; margin: 0; }
+          * { box-sizing: border-box; }
+          html, body { margin: 0; padding: 0; }
           body {
-            margin: 0;
             font-family: Arial, sans-serif;
             background: #fff;
             color: #111;
-            padding: 20px;
-            width: 280px;
+            padding: 3mm 4mm 8mm;
+            width: 80mm;
+            max-width: 100%;
+            word-wrap: break-word;
           }
+          tr { page-break-inside: avoid; }
           h1, p { margin: 0; }
           .muted { color: #666; font-size: 12px; }
           table {
@@ -146,13 +159,13 @@ function buildReceiptHtml(payload: {
       </head>
       <body>
         <h1>Offline POS</h1>
-        <p>${salonInfo.name}</p>
-        <p class="muted">${salonInfo.tagline}</p>
-        <p class="muted">${payload.receiptNo}</p>
-        <p class="muted">${salonInfo.phone}${salonInfo.email ? ` · ${salonInfo.email}` : ''}</p>
-        <p class="muted">${salonInfo.address}</p>
-        <p class="muted">Customer: ${payload.customerName || 'Walk-in'}</p>
-        <p class="muted">${payload.cashierName} · ${new Date(payload.createdAt).toLocaleString()}</p>
+        <p>${escapeHtml(salonInfo.name)}</p>
+        <p class="muted">${escapeHtml(salonInfo.tagline)}</p>
+        <p class="muted">${escapeHtml(payload.receiptNo)}</p>
+        <p class="muted">${escapeHtml(salonInfo.phone)}${salonInfo.email ? ` · ${escapeHtml(salonInfo.email)}` : ''}</p>
+        <p class="muted">${escapeHtml(salonInfo.address)}</p>
+        <p class="muted">Customer: ${escapeHtml(payload.customerName || 'Walk-in')}</p>
+        <p class="muted">${escapeHtml(payload.cashierName)} · ${new Date(payload.createdAt).toLocaleString('en-PK')}</p>
         <table>${rows}</table>
         <div class="totals">
           <div><span>Subtotal</span><span>${money.format(payload.subtotal)}</span></div>
@@ -160,7 +173,7 @@ function buildReceiptHtml(payload: {
           <div><span>Discount</span><span>${money.format(payload.discountTotal)}</span></div>
           <div class="grand"><span>Total</span><span>${money.format(payload.grandTotal)}</span></div>
         </div>
-        <p class="muted" style="margin-top:14px;">Payment: ${payload.paymentMethod}</p>
+        <p class="muted" style="margin-top:14px;">Payment: ${escapeHtml(payload.paymentMethod)}</p>
         ${payload.pointsEarned ? `<p class="muted">Points earned: +${payload.pointsEarned}</p>` : ''}
         <p class="muted" style="margin-top:14px; text-align:center;">Thank you for your visit!</p>
       </body>
@@ -176,10 +189,19 @@ async function printReceipt(payload: Parameters<typeof buildReceiptHtml>[0]) {
       nodeIntegration: false,
     },
   });
-  await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(buildReceiptHtml(payload))}`);
-  const result = await win.webContents.print({ silent: false, printBackground: true });
-  win.close();
-  return result;
+  try {
+    await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(buildReceiptHtml(payload))}`);
+    // webContents.print is callback-based (it does not return a promise). Closing the window
+    // before the callback fires cancels the spool job, which is what cut receipts off.
+    return await new Promise<{ success: boolean; failureReason?: string }>((resolve) => {
+      win.webContents.print(
+        { silent: false, printBackground: true, margins: { marginType: 'none' } },
+        (success, failureReason) => resolve({ success, failureReason: success ? undefined : failureReason })
+      );
+    });
+  } finally {
+    if (!win.isDestroyed()) win.close();
+  }
 }
 
 app.whenReady().then(() => {
@@ -190,7 +212,8 @@ app.whenReady().then(() => {
   ipcMain.handle('settings:update-salon', async (_event, payload) => updateSalonInfo(payload));
   ipcMain.handle('settings:update-loyalty', async (_event, payload) => updateLoyaltyRules(payload));
   ipcMain.handle('database:backup', async () => {
-    const today = new Date().toISOString().slice(0, 10);
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     const result = await dialog.showSaveDialog({
       title: 'Backup Offline POS Data',
       defaultPath: `salon-backup-${today}.xlsx`,

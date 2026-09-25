@@ -143,6 +143,7 @@ type ReportSnapshot = {
     visitsToday: number;
     manualVisits: number;
     saleVisits: number;
+    checkoutVisits: number;
     topServices: CustomerServiceSummary[];
     recentVisits: VisitRow[];
   };
@@ -360,7 +361,7 @@ declare global {
           unitPrice: number;
           lineTotal: number;
         }>;
-      }) => Promise<boolean>;
+      }) => Promise<{ success: boolean; failureReason?: string }>;
     };
   }
 }

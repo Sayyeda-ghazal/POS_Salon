@@ -214,6 +214,7 @@ declare global {
           visitsToday: number;
           manualVisits: number;
           saleVisits: number;
+          checkoutVisits: number;
           topServices: Array<{
             serviceName: string;
             visitCount: number;
@@ -705,7 +706,7 @@ declare global {
           unitPrice: number;
           lineTotal: number;
         }>;
-      }) => Promise<boolean>;
+      }) => Promise<{ success: boolean; failureReason?: string }>;
     };
   }
 }
